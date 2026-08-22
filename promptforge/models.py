@@ -25,9 +25,12 @@ class Brief:
     style: str | None = None           # doar pentru imagine: stil impus
     aspect: str | None = None          # doar pentru imagine
     subject: str | None = None         # doar pentru imagine: subiectul, formulat în engleză
+    overrides: dict[str, str] = field(default_factory=dict)  # câmpuri venite din analiza unei imagini
+    transfer: str = ""                 # ce s-a preluat din care imagine, la combinarea a două poze
+    extra_negatives: list[str] = field(default_factory=list)
     must: list[str] = field(default_factory=list)   # cerințe obligatorii extra
     avoid: list[str] = field(default_factory=list)  # interdicții extra
-    lang: str = "ro"                   # limba prompturilor de text
+    lang: str | None = None            # limba promptului; None = automat
     seed: int = 0
     min_words: int = DEFAULT_MIN_WORDS
     max_words: int = DEFAULT_MAX_WORDS
@@ -38,6 +41,10 @@ class Brief:
         self.idea = " ".join(self.idea.split())
         if self.mode not in (MODE_TEXT, MODE_IMAGE):
             raise ValueError(f"Mod necunoscut: {self.mode!r} (folosește 'text' sau 'image').")
+        if self.lang is None:
+            # Prompturile de text sunt implicit în română, cele de imagine în
+            # engleză: modelele de imagine sunt antrenate pe termeni englezești.
+            self.lang = "en" if self.mode == MODE_IMAGE else "ro"
         if self.lang not in ("ro", "en"):
             raise ValueError(f"Limbă nesuportată: {self.lang!r} (folosește 'ro' sau 'en').")
         if self.min_words < 50:

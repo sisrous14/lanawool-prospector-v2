@@ -45,6 +45,8 @@ def _add_common(parser: argparse.ArgumentParser, mode: str) -> None:
         parser.add_argument("--style", help="stil vizual impus (altfel e ales automat)")
         parser.add_argument("--aspect", help="raport de aspect, ex. 16:9")
         parser.add_argument("--subject", help="subiectul formulat în engleză, dacă ideea e în română")
+        parser.add_argument("--lang", default=None, choices=["ro", "en"],
+                            help="limba promptului (implicit engleză, cum preferă modelele de imagine)")
 
 
 def _brief_from_args(args: argparse.Namespace, mode: str) -> Brief:
@@ -60,7 +62,7 @@ def _brief_from_args(args: argparse.Namespace, mode: str) -> Brief:
         subject=getattr(args, "subject", None),
         must=args.must,
         avoid=args.avoid,
-        lang=getattr(args, "lang", "ro"),
+        lang=getattr(args, "lang", None),
         seed=args.seed,
         min_words=args.min_words,
         max_words=args.max_words,
@@ -134,6 +136,118 @@ def _run_generation(args: argparse.Namespace, mode: str) -> int:
             history_store.save(brief, result)
 
     return 0
+
+
+def _add_source_options(parser: argparse.ArgumentParser) -> None:
+    """Opțiunile comune comenzilor care pornesc de la poze sau linkuri."""
+    parser.add_argument("--target", help="modelul-țintă")
+    parser.add_argument("--mode", default=MODE_IMAGE, choices=[MODE_IMAGE, MODE_TEXT],
+                        help="ce fel de prompt vrei pornind de la surse")
+    parser.add_argument("--lang", default=None, choices=["ro", "en"])
+    parser.add_argument("--must", action="append", default=[], metavar="CERINȚĂ")
+    parser.add_argument("--avoid", action="append", default=[], metavar="INTERDICȚIE")
+    parser.add_argument("--aspect", help="raport de aspect impus")
+    parser.add_argument("--style", help="stil vizual impus")
+    parser.add_argument("--variants", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--min-words", type=int, default=DEFAULT_MIN_WORDS)
+    parser.add_argument("--max-words", type=int, default=DEFAULT_MAX_WORDS)
+    parser.add_argument("--model", default=None, help="modelul care analizează imaginile")
+    parser.add_argument("--effort", default="high",
+                        choices=["low", "medium", "high", "xhigh", "max"])
+    parser.add_argument("--out", type=Path)
+    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument("--no-save", action="store_true")
+
+
+def _run_from_sources(args: argparse.Namespace, sources: list[str], instruction: str) -> int:
+    """Firul comun al comenzilor `vision` și `remix`."""
+    from .llm import DEFAULT_MODEL, ModelUnavailable
+    from .media import MediaError
+    from .pipeline import from_sources
+    from .vision import VisionError
+
+    options = {
+        "target": args.target,
+        "lang": args.lang,
+        "must": args.must,
+        "avoid": args.avoid,
+        "seed": args.seed,
+        "min_words": args.min_words,
+        "max_words": args.max_words,
+    }
+    if args.mode == MODE_IMAGE:
+        options["aspect"] = args.aspect
+        options["style"] = args.style
+
+    try:
+        brief, results = from_sources(
+            sources,
+            instruction,
+            mode=args.mode,
+            variants=max(1, args.variants),
+            model=args.model or DEFAULT_MODEL,
+            effort=args.effort,
+            **options,
+        )
+    except MediaError as exc:
+        print(f"Eroare la încărcarea surselor: {exc}", file=sys.stderr)
+        return 2
+    except ModelUnavailable as exc:
+        print(
+            f"Analiza imaginilor are nevoie de un model: {exc}\n"
+            f"Instalează dependența cu: pip install \"promptforge[images]\"",
+            file=sys.stderr,
+        )
+        return 3
+    except (VisionError, ValueError) as exc:
+        print(f"Eroare: {exc}", file=sys.stderr)
+        return 2
+
+    if args.as_json:
+        output = json.dumps([r.to_dict() for r in results], ensure_ascii=False, indent=2)
+    else:
+        output = "\n\n".join(_render_result(r, len(results)) for r in results)
+
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(output + "\n", encoding="utf-8")
+        print(f"Scris în {args.out}")
+    else:
+        print(output)
+
+    if not args.no_save:
+        for result in results:
+            history_store.save(brief, result)
+    return 0
+
+
+def _cmd_vision(args: argparse.Namespace) -> int:
+    return _run_from_sources(args, args.sources, " ".join(args.instruct or []))
+
+
+def _cmd_remix(args: argparse.Namespace) -> int:
+    """Ia elemente dintr-o imagine și le pune în alta."""
+    instruction = " ".join(args.take)
+    source_label = f"imaginea {args.source}"
+    target_label = f"imaginea {args.into}"
+    if args.source == args.into:
+        print("Sursa și destinația nu pot fi aceeași imagine.", file=sys.stderr)
+        return 2
+    if max(args.source, args.into) > len(args.sources):
+        print(
+            f"Ai dat {len(args.sources)} imagini, dar te referi la imaginea "
+            f"{max(args.source, args.into)}.",
+            file=sys.stderr,
+        )
+        return 2
+
+    full = (
+        f"Ia {instruction} din {source_label} și aplică-le peste subiectul și "
+        f"conținutul din {target_label}. Rezultatul păstrează ce este în "
+        f"{target_label}, dar preia {instruction} din {source_label}."
+    )
+    return _run_from_sources(args, args.sources, full)
 
 
 def _cmd_ask(args: argparse.Namespace) -> int:
@@ -230,6 +344,28 @@ def build_parser() -> argparse.ArgumentParser:
     image_parser = sub.add_parser("image", help="prompt pentru un model de imagine")
     _add_common(image_parser, MODE_IMAGE)
     image_parser.set_defaults(func=lambda a: _run_generation(a, MODE_IMAGE))
+
+    vision_parser = sub.add_parser(
+        "vision", help="prompt pornind de la poze sau linkuri")
+    vision_parser.add_argument("sources", nargs="+",
+                               help="fișiere imagine, adrese de imagine sau pagini web")
+    vision_parser.add_argument("--instruct", nargs="+", default=[],
+                               help="ce vrei să obții din surse")
+    _add_source_options(vision_parser)
+    vision_parser.set_defaults(func=_cmd_vision)
+
+    remix_parser = sub.add_parser(
+        "remix", help="ia elemente dintr-o poză și le pune în alta")
+    remix_parser.add_argument("sources", nargs="+", help="cel puțin două imagini")
+    remix_parser.add_argument("--take", nargs="+", required=True,
+                              metavar="ELEMENT",
+                              help="ce preiei, ex: lumina si paleta")
+    remix_parser.add_argument("--source", type=int, default=1,
+                              help="din a câta imagine preiei (implicit 1)")
+    remix_parser.add_argument("--into", type=int, default=2,
+                              help="în a câta imagine pui (implicit 2)")
+    _add_source_options(remix_parser)
+    remix_parser.set_defaults(func=_cmd_remix)
 
     ask_parser = sub.add_parser("ask", help="mod interactiv, cu întrebări")
     ask_parser.set_defaults(func=_cmd_ask)

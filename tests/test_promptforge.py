@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import unittest
@@ -13,7 +14,12 @@ from promptforge.cli import main
 from promptforge.detect import detect_domain, keywords_of
 from promptforge.history import load, save
 from promptforge.image_engine import looks_romanian
+from promptforge.media import ImageRef, MediaError, load_image
 from promptforge.models import Section
+from promptforge.pipeline import from_sources
+from promptforge.translate import to_english
+from promptforge.vision import VisionError, analyze_images
+from promptforge.web import _decode_uploads
 from promptforge.targets import IMAGE_TARGETS, TEXT_TARGETS
 from promptforge.vocab import IMAGE_DOMAINS, TEXT_DOMAINS
 
@@ -246,9 +252,14 @@ class TestGenerareImagine(unittest.TestCase):
         result = generate(Brief(idea="a portrait", mode="image", target="flux", aspect="21:9"))
         self.assertIn("21:9", result.parameters)
 
-    def test_avertizeaza_pentru_subiect_in_romana(self):
-        result = generate(Brief(idea="un portret cu o femeie la fereastra", mode="image"))
-        self.assertTrue(any("română" in note for note in result.notes))
+    def test_subiectul_romanesc_este_tradus(self):
+        result = generate(Brief(idea="un pescar batran pe un chei de piatra", mode="image"))
+        self.assertIn("old fisherman on a stone pier", result.prompt)
+        self.assertTrue(any("tradus automat" in note for note in result.notes))
+
+    def test_subiectul_netradus_este_semnalat(self):
+        result = generate(Brief(idea="un dispozitiv ciudat cu manete si zgomote", mode="image"))
+        self.assertTrue(any("rămas în română" in note for note in result.notes))
 
     def test_subiectul_in_engleza_inlatura_avertismentul(self):
         result = generate(Brief(
@@ -343,3 +354,241 @@ class TestWebAPI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Traducere, surse vizuale și flux complet
+# ---------------------------------------------------------------------------
+
+class TestTraducere(unittest.TestCase):
+    def test_fraze_uzuale(self):
+        cases = {
+            "un pescar batran pe un chei de piatra": "an old fisherman on a stone pier",
+            "o femeie in varsta la fereastra": "an elderly woman by the window",
+            "o pisica neagra pe un scaun de lemn": "a black cat on a wooden chair",
+            "un pod de fier peste un rau": "an iron bridge over a river",
+            "flori albe intr-un borcan de sticla": "white flowers in a glass jar",
+        }
+        for romanian, english in cases.items():
+            with self.subTest(romanian=romanian):
+                self.assertEqual(to_english(romanian)[0], english)
+
+    def test_adjectivele_trec_inaintea_substantivului(self):
+        self.assertEqual(to_english("o casa veche")[0], "an old house")
+
+    def test_refuza_traducerea_cand_nu_recunoaste_destul(self):
+        original = "un dispozitiv ciudat cu manete si zgomote"
+        translated, coverage = to_english(original)
+        self.assertEqual(translated, original)
+        self.assertLess(coverage, 0.6)
+
+    def test_prepozitia_bate_substantivul_omonim(self):
+        # „peste” e prepoziție mult mai des decât „pește”.
+        self.assertIn("over", to_english("un pod peste un rau")[0])
+
+    def test_promptul_romanesc_isi_pastreaza_eticheta(self):
+        result = generate(Brief(idea="un pescar batran", mode="image", lang="ro"))
+        self.assertIn("SUBIECT", result.prompt)
+        self.assertTrue(any("în română" in note for note in result.notes))
+
+
+class TestMedia(unittest.TestCase):
+    PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQ"
+        "DwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+
+    def test_incarca_fisier_local(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.png"
+            path.write_bytes(self.PNG)
+            ref = load_image(str(path), "imaginea 1")
+            self.assertEqual(ref.media_type, "image/png")
+            self.assertEqual(ref.to_block()["source"]["type"], "base64")
+
+    def test_fisier_inexistent(self):
+        with self.assertRaises(MediaError):
+            load_image("/nu/exista/deloc.png")
+
+    def test_format_nesuportat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.txt"
+            path.write_bytes(b"text simplu")
+            with self.assertRaises(MediaError):
+                load_image(str(path))
+
+    def test_refuza_scheme_straine(self):
+        with self.assertRaises(MediaError):
+            load_image("ftp://exemplu.ro/a.png")
+
+    def test_adresa_de_imagine_nu_se_descarca(self):
+        ref = ImageRef(label="imaginea 1", origin="https://x/a.jpg", url="https://x/a.jpg")
+        self.assertEqual(ref.to_block()["source"]["type"], "url")
+
+
+class TestVision(unittest.TestCase):
+    ANALYSIS = json.dumps({
+        "domain": "portret",
+        "subject": "an elderly fisherman mending a net",
+        "environment": "a weathered stone pier at dawn",
+        "lighting": "soft low-angle dawn light from camera-left",
+        "palette": "muted slate blue and weathered oak",
+        "aspect": "3:2",
+        "negative": ["smooth skin", "plastic rope"],
+        "transfer": "lumina din imaginea 1, subiectul din imaginea 2",
+        "camp_inventat": "trebuie ignorat",
+    })
+
+    def _sender(self, response=None):
+        captured = {}
+
+        def send(*, system, content, model, effort):
+            captured["content"] = content
+            captured["model"] = model
+            return response if response is not None else self.ANALYSIS
+
+        return send, captured
+
+    def test_extrage_campurile_cunoscute(self):
+        send, _ = self._sender()
+        images = [ImageRef(label="imaginea 1", origin="a.png", media_type="image/png", data="x")]
+        fields = analyze_images(images, "descrie", sender=send)
+        self.assertEqual(fields["domain"], "portret")
+        self.assertEqual(fields["aspect"], "3:2")
+        self.assertNotIn("camp_inventat", fields)
+
+    def test_trimite_toate_imaginile(self):
+        send, captured = self._sender()
+        images = [
+            ImageRef(label="imaginea 1", origin="a.png", media_type="image/png", data="x"),
+            ImageRef(label="imaginea 2", origin="https://x/b.jpg", url="https://x/b.jpg"),
+        ]
+        analyze_images(images, "combina-le", sender=send)
+        kinds = [block.get("type") for block in captured["content"]]
+        self.assertEqual(kinds.count("image"), 2)
+
+    def test_json_in_gard_de_cod(self):
+        send, _ = self._sender(f"Iată:\n```json\n{self.ANALYSIS}\n```")
+        images = [ImageRef(label="imaginea 1", origin="a.png", media_type="image/png", data="x")]
+        self.assertIn("subject", analyze_images(images, sender=send))
+
+    def test_raspuns_fara_json(self):
+        send, _ = self._sender("nu am putut analiza")
+        images = [ImageRef(label="imaginea 1", origin="a.png", media_type="image/png", data="x")]
+        with self.assertRaises(VisionError):
+            analyze_images(images, sender=send)
+
+    def test_json_fara_campuri_utile(self):
+        send, _ = self._sender('{"altceva": 1}')
+        images = [ImageRef(label="imaginea 1", origin="a.png", media_type="image/png", data="x")]
+        with self.assertRaises(VisionError):
+            analyze_images(images, sender=send)
+
+    def test_fara_imagini(self):
+        with self.assertRaises(VisionError):
+            analyze_images([], sender=lambda **kw: "{}")
+
+
+class TestFluxDinSurse(unittest.TestCase):
+    PNG = TestMedia.PNG
+
+    def _two_images(self, tmp):
+        first, second = Path(tmp) / "a.png", Path(tmp) / "b.png"
+        first.write_bytes(self.PNG)
+        second.write_bytes(self.PNG)
+        return [str(first), str(second)]
+
+    def test_analiza_ajunge_in_prompt(self):
+        send = lambda **kw: TestVision.ANALYSIS  # noqa: E731
+        with tempfile.TemporaryDirectory() as tmp:
+            brief, results = from_sources(
+                self._two_images(tmp),
+                "ia lumina din imaginea 1 si pune-o peste subiectul din imaginea 2",
+                target="flux", sender=send,
+            )
+        result = results[0]
+        self.assertIn("elderly fisherman mending a net", result.prompt)
+        self.assertIn("weathered stone pier", result.prompt)
+        self.assertIn("3:2", result.parameters)
+        self.assertEqual(result.domain, "portret")
+        self.assertGreaterEqual(result.word_count, 300)
+        self.assertLessEqual(result.word_count, 500)
+
+    def test_negativele_din_analiza_ajung_in_prompt_negativ(self):
+        send = lambda **kw: TestVision.ANALYSIS  # noqa: E731
+        with tempfile.TemporaryDirectory() as tmp:
+            _, results = from_sources(self._two_images(tmp), "combina", target="flux", sender=send)
+        self.assertIn("smooth skin", results[0].negative_prompt)
+
+    def test_combinarea_apare_ca_observatie_nu_in_prompt(self):
+        # „imaginea 1” nu înseamnă nimic pentru modelul-țintă, care primește doar
+        # text; nota îi este utilă omului, nu promptului.
+        send = lambda **kw: TestVision.ANALYSIS  # noqa: E731
+        with tempfile.TemporaryDirectory() as tmp:
+            _, results = from_sources(self._two_images(tmp), "combina", target="flux", sender=send)
+        result = results[0]
+        self.assertNotIn("imaginea 1", result.prompt)
+        self.assertTrue(any("Combinare:" in note for note in result.notes))
+
+    def test_sursele_sunt_notate(self):
+        send = lambda **kw: TestVision.ANALYSIS  # noqa: E731
+        with tempfile.TemporaryDirectory() as tmp:
+            _, results = from_sources(self._two_images(tmp), "combina", sender=send)
+        self.assertTrue(any("Generat din 2 imagini" in note for note in results[0].notes))
+
+    def test_mod_text_din_imagine(self):
+        send = lambda **kw: TestVision.ANALYSIS  # noqa: E731
+        with tempfile.TemporaryDirectory() as tmp:
+            brief, results = from_sources(
+                self._two_images(tmp), "scrie o descriere de produs",
+                mode="text", sender=send,
+            )
+        self.assertEqual(results[0].mode, "text")
+        self.assertIn("scrie o descriere de produs", brief.idea)
+
+    def test_variante_multiple(self):
+        send = lambda **kw: TestVision.ANALYSIS  # noqa: E731
+        with tempfile.TemporaryDirectory() as tmp:
+            _, results = from_sources(self._two_images(tmp), "combina", variants=3, sender=send)
+        self.assertEqual(len(results), 3)
+
+
+class TestCLISurse(unittest.TestCase):
+    def test_remix_refuza_indici_gresiti(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.png"
+            path.write_bytes(TestMedia.PNG)
+            self.assertEqual(
+                main(["remix", str(path), "--take", "lumina", "--into", "2", "--no-save"]), 2
+            )
+
+    def test_remix_refuza_aceeasi_imagine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.png"
+            path.write_bytes(TestMedia.PNG)
+            self.assertEqual(
+                main(["remix", str(path), str(path), "--take", "lumina",
+                      "--source", "1", "--into", "1", "--no-save"]), 2
+            )
+
+    def test_vision_semnaleaza_lipsa_modelului(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.png"
+            path.write_bytes(TestMedia.PNG)
+            # Fără pachetul `anthropic` instalat, codul 3 spune exact asta.
+            self.assertIn(main(["vision", str(path), "--no-save"]), (0, 3))
+
+
+class TestIncarcareWeb(unittest.TestCase):
+    def test_decodeaza_data_url(self):
+        encoded = base64.standard_b64encode(TestMedia.PNG).decode()
+        refs = _decode_uploads([{"name": "a.png", "data_url": f"data:image/png;base64,{encoded}"}])
+        self.assertEqual(refs[0].media_type, "image/png")
+
+    def test_refuza_tip_nesuportat(self):
+        with self.assertRaises(MediaError):
+            _decode_uploads([{"name": "x", "data_url": "data:text/plain;base64,AAAA"}])
+
+    def test_refuza_format_stricat(self):
+        with self.assertRaises(MediaError):
+            _decode_uploads([{"name": "x", "data_url": "nu-i data url"}])

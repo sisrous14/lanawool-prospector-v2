@@ -20,7 +20,7 @@ from .models import (
     MODE_TEXT,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:

@@ -7,11 +7,13 @@ nu este expus în rețea.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import generate_many
+from .media import ImageRef, MediaError, SUPPORTED_TYPES
 from .models import Brief, DEFAULT_MAX_WORDS, DEFAULT_MIN_WORDS, MODE_IMAGE, MODE_TEXT
 from .targets import IMAGE_TARGETS, TEXT_TARGETS
 from .vocab import IMAGE_DOMAINS, TEXT_DOMAINS, TONES
@@ -73,6 +75,10 @@ PAGE = """<!doctype html>
           color: var(--accent); border: 1px solid var(--line); }
   .notes { font-size: .88rem; color: var(--muted); margin-top: .6rem; padding-left: 1.1rem; }
   .err { color: #c0392b; margin-top: 1rem; }
+  .thumbs { display: flex; gap: .5rem; flex-wrap: wrap; margin: .75rem 0 0; }
+  .thumbs figure { margin: 0; text-align: center; font-size: .75rem; color: var(--muted); }
+  .thumbs img { width: 86px; height: 86px; object-fit: cover; border-radius: 8px;
+                border: 1px solid var(--line); display: block; }
 </style>
 </head>
 <body>
@@ -84,9 +90,18 @@ PAGE = """<!doctype html>
     <div class="modes">
       <button type="button" id="mode-text" aria-pressed="true">Text</button>
       <button type="button" id="mode-image" aria-pressed="false">Imagine</button>
+      <button type="button" id="mode-vision" aria-pressed="false">Din poze</button>
     </div>
 
-    <label for="idea">Ideea ta</label>
+    <div class="vision-only" hidden>
+      <label for="files">Poze (una sau mai multe)</label>
+      <input id="files" type="file" accept="image/*" multiple>
+      <label for="links" style="margin-top:.9rem">sau adrese web, una pe rând</label>
+      <textarea id="links" style="min-height:3rem" placeholder="https://exemplu.ro/poza.jpg"></textarea>
+      <p class="thumbs" id="thumbs"></p>
+    </div>
+
+    <label for="idea" id="idea-label">Ideea ta</label>
     <textarea id="idea" placeholder="ex: o aplicație care îmi urmărește cheltuielile lunare"></textarea>
 
     <div class="grid">
@@ -164,16 +179,43 @@ function fillSelect(el, values, blankLabel) {
 }
 
 function applyMode() {
-  $("mode-text").setAttribute("aria-pressed", mode === "text");
-  $("mode-image").setAttribute("aria-pressed", mode === "image");
+  for (const name of ["text", "image", "vision"]) {
+    $("mode-" + name).setAttribute("aria-pressed", mode === name);
+  }
   document.querySelectorAll(".text-only").forEach(el => el.hidden = mode !== "text");
-  document.querySelectorAll(".image-only").forEach(el => el.hidden = mode !== "image");
-  fillSelect($("target"), CONFIG.targets[mode], "implicit");
-  fillSelect($("domain"), CONFIG.domains[mode], "detectare automată");
+  document.querySelectorAll(".image-only").forEach(el => el.hidden = mode === "text");
+  document.querySelectorAll(".vision-only").forEach(el => el.hidden = mode !== "vision");
+  $("idea-label").textContent = mode === "vision"
+    ? "Ce vrei să obții din poze (ex: ia lumina din imaginea 1 și pune-o peste subiectul din imaginea 2)"
+    : "Ideea ta";
+  $("domain").parentElement.hidden = mode === "vision";
+  const key = mode === "text" ? "text" : "image";
+  fillSelect($("target"), CONFIG.targets[key], "implicit");
+  fillSelect($("domain"), CONFIG.domains[key], "detectare automată");
 }
 
-$("mode-text").onclick = () => { mode = "text"; applyMode(); };
-$("mode-image").onclick = () => { mode = "image"; applyMode(); };
+for (const name of ["text", "image", "vision"]) {
+  $("mode-" + name).onclick = () => { mode = name; applyMode(); };
+}
+
+const picked = [];
+$("files").onchange = async (event) => {
+  picked.length = 0;
+  $("thumbs").innerHTML = "";
+  for (const file of event.target.files) {
+    const data = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    picked.push({ name: file.name, data_url: data });
+    const figure = document.createElement("figure");
+    figure.innerHTML = '<img alt="' + escapeHtml(file.name) + '" src="' + data + '">' +
+                       "<figcaption>imaginea " + picked.length + "</figcaption>";
+    $("thumbs").appendChild(figure);
+  }
+};
 
 fillSelect($("tone"), CONFIG.tones, "implicit");
 applyMode();
@@ -189,13 +231,16 @@ function escapeHtml(text) {
 $("go").onclick = async () => {
   const idea = $("idea").value.trim();
   const out = $("out");
-  if (!idea) { out.innerHTML = '<p class="err">Scrie mai întâi o idee.</p>'; return; }
+  if (!idea && mode !== "vision") {
+    out.innerHTML = '<p class="err">Scrie mai întâi o idee.</p>';
+    return;
+  }
 
   $("go").disabled = true;
   out.innerHTML = '<p class="meta">Se generează…</p>';
 
   const body = {
-    idea, mode,
+    idea: idea || "descrie sursele primite", mode,
     target: $("target").value || null,
     domain: $("domain").value || null,
     variants: parseInt($("variants").value, 10) || 1,
@@ -209,8 +254,19 @@ $("go").onclick = async () => {
     subject: mode === "image" ? ($("subject").value.trim() || null) : null,
   };
 
+  if (mode === "vision") {
+    body.images = picked;
+    body.links = lines("links");
+    body.mode = "image";
+    if (!body.images.length && !body.links.length) {
+      out.innerHTML = '<p class="err">Adaugă cel puțin o poză sau o adresă.</p>';
+      $("go").disabled = false;
+      return;
+    }
+  }
+
   try {
-    const response = await fetch("/api/generate", {
+    const response = await fetch(mode === "vision" ? "/api/vision" : "/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -250,6 +306,34 @@ function render(r) {
 </body>
 </html>
 """
+
+
+MAX_JSON_BYTES = 100_000
+MAX_UPLOAD_BYTES = 30 * 1024 * 1024
+
+
+def _decode_uploads(raw_images: list) -> list[ImageRef]:
+    """Transformă pozele din formular (data-URL) în surse pentru analiză."""
+    images: list[ImageRef] = []
+    for index, item in enumerate(raw_images, start=1):
+        if not isinstance(item, dict):
+            raise MediaError("Formatul pozelor trimise nu este cel așteptat.")
+        data_url = str(item.get("data_url") or "")
+        match = re.fullmatch(r"data:([^;,]+);base64,(.+)", data_url, flags=re.DOTALL)
+        if not match:
+            raise MediaError(f"Poza {index} nu a putut fi citită.")
+        media_type, data = match.group(1), match.group(2)
+        if media_type not in SUPPORTED_TYPES:
+            raise MediaError(
+                f"Poza {index} este {media_type}; acceptate: JPEG, PNG, GIF, WebP."
+            )
+        images.append(ImageRef(
+            label=f"imaginea {index}",
+            origin=str(item.get("name") or f"poza {index}"),
+            media_type=media_type,
+            data=data,
+        ))
+    return images
 
 
 def _page() -> bytes:
@@ -295,20 +379,27 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_json(404, {"error": "Pagină inexistentă"})
 
+    def _read_payload(self, limit: int) -> dict | None:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > limit:
+            self._send_json(400, {"error": "Cerere invalidă sau prea mare."})
+            return None
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json(400, {"error": "JSON invalid"})
+            return None
+
     def do_POST(self) -> None:  # noqa: N802 - semnătură impusă
+        if self.path == "/api/vision":
+            self._handle_vision()
+            return
         if self.path != "/api/generate":
             self._send_json(404, {"error": "Rută inexistentă"})
             return
 
-        length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0 or length > 100_000:
-            self._send_json(400, {"error": "Cerere invalidă"})
-            return
-
-        try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            self._send_json(400, {"error": "JSON invalid"})
+        payload = self._read_payload(MAX_JSON_BYTES)
+        if payload is None:
             return
 
         variants = payload.pop("variants", 1)
@@ -333,6 +424,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": str(exc)})
             return
 
+        self._send_results(results)
+
+    def _send_results(self, results) -> None:
         self._send_json(
             200,
             {
@@ -341,6 +435,52 @@ class Handler(BaseHTTPRequestHandler):
                 ]
             },
         )
+
+    def _handle_vision(self) -> None:
+        """Analizează pozele trimise din formular și întoarce prompturile."""
+        from .llm import DEFAULT_MODEL, ModelUnavailable
+        from .pipeline import SourceBundle, from_bundle, load_all
+        from .vision import VisionError
+
+        payload = self._read_payload(MAX_UPLOAD_BYTES)
+        if payload is None:
+            return
+
+        try:
+            images = _decode_uploads(payload.get("images") or [])
+            links = [str(link).strip() for link in (payload.get("links") or []) if str(link).strip()]
+            bundle = load_all(links) if links else SourceBundle(images=[], pages=[])
+            for image in images:
+                image.label = f"imaginea {len(bundle.images) + 1}"
+                bundle.images.append(image)
+            if bundle.empty:
+                raise MediaError("Nu ai trimis nicio poză și niciun link.")
+
+            brief, results = from_bundle(
+                bundle,
+                str(payload.get("idea") or "").strip(),
+                mode=MODE_IMAGE,
+                variants=max(1, min(5, int(payload.get("variants") or 1))),
+                model=str(payload.get("model") or DEFAULT_MODEL),
+                target=payload.get("target") or None,
+                aspect=payload.get("aspect") or None,
+                must=list(payload.get("must") or []),
+                avoid=list(payload.get("avoid") or []),
+                min_words=int(payload.get("min_words") or DEFAULT_MIN_WORDS),
+                max_words=int(payload.get("max_words") or DEFAULT_MAX_WORDS),
+            )
+        except MediaError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        except ModelUnavailable as exc:
+            self._send_json(503, {"error": f"Analiza imaginilor are nevoie de un model. {exc}"})
+            return
+        except (VisionError, ValueError, TypeError) as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+
+        del brief
+        self._send_results(results)
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
