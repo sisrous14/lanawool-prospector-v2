@@ -77,8 +77,21 @@ class Brief:
                     f"Platformă necunoscută: {self.platform!r}. "
                     f"Disponibile: {', '.join(sorted(PLATFORMS))}"
                 )
+        if self.width < 0 or self.height < 0:
+            raise ValueError("Dimensiunile nu pot fi negative.")
         if (self.width > 0) != (self.height > 0):
             raise ValueError("Dimensiunea are nevoie și de lățime, și de înălțime.")
+        if self.duration < 0:
+            raise ValueError("Durata nu poate fi negativă.")
+
+        # Rândurile goale dintr-o listă ajung în prompt ca puncte fără text sau
+        # ca o virgulă la începutul promptului negativ. Le scoatem aici, o dată,
+        # ca niciun motor să nu mai aibă grija lor.
+        self.must = [item.strip() for item in self.must if item and item.strip()]
+        self.avoid = [item.strip() for item in self.avoid if item and item.strip()]
+        self.extra_negatives = [
+            item.strip() for item in self.extra_negatives if item and item.strip()
+        ]
         if self.max_words > MAX_ALLOWED_WORDS:
             raise ValueError(
                 f"max_words nu poate depăși {MAX_ALLOWED_WORDS} — adică {MAX_LINKS} de "

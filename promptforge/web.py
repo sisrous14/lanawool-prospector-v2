@@ -558,6 +558,19 @@ MAX_JSON_BYTES = 100_000
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024
 
 
+def _string_list(value: object) -> list[str]:
+    """Listă de șiruri dintr-o valoare venită de afară.
+
+    Un șir primit acolo unde se aștepta o listă nu se desface în litere: ori e
+    listă, ori e un singur element, ori nu e nimic.
+    """
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
 def _brief_from_payload(payload: dict, mode: str | None = None) -> Brief:
     """Construiește briefull din corpul cererii web, validând ce vine de afară."""
     width = height = 0
@@ -580,8 +593,8 @@ def _brief_from_payload(payload: dict, mode: str | None = None) -> Brief:
         source_text=str(payload.get("source_text") or ""),
         keyword=str(payload.get("keyword") or ""),
         intent=str(payload.get("intent") or ""),
-        must=list(payload.get("must") or []),
-        avoid=list(payload.get("avoid") or []),
+        must=_string_list(payload.get("must")),
+        avoid=_string_list(payload.get("avoid")),
         min_words=int(payload.get("min_words") or DEFAULT_MIN_WORDS),
         max_words=int(payload.get("max_words") or DEFAULT_MAX_WORDS),
     )
@@ -685,15 +698,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "Pagină inexistentă"})
 
     def _read_payload(self, limit: int) -> dict | None:
-        length = int(self.headers.get("Content-Length") or 0)
+        """Citește corpul cererii, garantând că e un obiect JSON.
+
+        Un JSON valid care nu e obiect — o listă, un număr — ar trece de
+        `json.loads` și ar exploda mai încolo la primul `.get`. Îl oprim aici.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._send_json(400, {"error": "Antet Content-Length invalid."})
+            return None
         if length <= 0 or length > limit:
             self._send_json(400, {"error": "Cerere invalidă sau prea mare."})
             return None
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json(400, {"error": "JSON invalid"})
             return None
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "Aștept un obiect JSON, nu o listă sau o valoare."})
+            return None
+        return payload
 
     def _handle_check(self) -> None:
         """Verifică lungimile unui text față de limitele platformei."""
@@ -746,7 +772,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         variants = payload.pop("variants", 1)
-        parts = int(payload.pop("parts", 0) or 0)
+        try:
+            parts = int(payload.pop("parts", 0) or 0)
+        except (TypeError, ValueError):
+            self._send_json(400, {"error": "„parts” trebuie să fie un număr."})
+            return
+        if parts < 0:
+            self._send_json(400, {"error": "„parts” trebuie să fie cel puțin 1."})
+            return
         try:
             variants = max(1, min(5, int(variants)))
             notes: list[str] = []
@@ -797,7 +830,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             images = _decode_uploads(payload.get("images") or [])
-            links = [str(link).strip() for link in (payload.get("links") or []) if str(link).strip()]
+            links = _string_list(payload.get("links"))
             bundle = load_all(links) if links else SourceBundle(images=[], pages=[])
             for image in images:
                 image.label = f"imaginea {len(bundle.images) + 1}"
@@ -820,8 +853,8 @@ class Handler(BaseHTTPRequestHandler):
                 platform=payload.get("platform") or None,
                 width=width,
                 height=height,
-                must=list(payload.get("must") or []),
-                avoid=list(payload.get("avoid") or []),
+                must=_string_list(payload.get("must")),
+                avoid=_string_list(payload.get("avoid")),
                 min_words=int(payload.get("min_words") or DEFAULT_MIN_WORDS),
                 max_words=int(payload.get("max_words") or DEFAULT_MAX_WORDS),
             )

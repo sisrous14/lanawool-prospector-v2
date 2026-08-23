@@ -1,0 +1,97 @@
+index,mod,domeniu,tinta,cuvinte,prompt,prompt_negativ,parametri,observatii
+1,image,general,flux,311,"SUBJECT
+O cana. This is the single focal point of the image and every other choice below exists to serve it. Render it prominently, unambiguously and in full — no part of the main subject is cropped away or hidden behind other elements.
+
+SETTING
+Placed in simplified setting with clear separation between subject and background. The environment supports the subject and never competes with it for attention; secondary elements stay subordinate in contrast and detail.
+
+COMPOSITION
+Centred symmetrical composition with strong vertical axis and balanced margins. The frame is balanced and intentional, with a clear reading order from the primary subject outward.
+
+CAMERA
+Close shot on the most telling detail, shot on 50mm at f/2.8, natural perspective. Perspective is natural and undistorted, with the plane of focus falling exactly on the subject.
+
+LIGHTING
+Dramatic side light with deep shadows and shaped highlights. A single coherent light direction governs the whole frame; highlights are shaped rather than blown out and shadows retain detail.
+
+COLOUR AND MOOD
+Restrained palette of forest green, charcoal and bone, with weathered brass as the only warm note. The overall mood is warm, intimate and reassuring, carried by the light and the colour relationships rather than by added effects.
+
+STYLE
+Cinematic still with deliberate colour grading. The stylistic treatment stays consistent across the entire image, with no mixing of incompatible rendering approaches.
+
+DETAIL
+Clean, almost clinical rendering where every surface is described precisely and nothing is suggested. Every element in frame is there for a reason.
+
+TECHNICAL
+Photorealistic, ultra-detailed, sharp focus on the subject, natural depth of field, 8K resolution, professional colour grading.
+
+ADDITIONAL DIRECTION
+Coherent single light direction across the whole image.
+
+COHERENCE
+Every element in the frame is physically plausible: scale relationships hold, shadows fall consistently with the stated light direction, reflections match their sources, and materials behave the way real materials behave under this light.","blurry, low resolution, distorted proportions, extra limbs, malformed hands, watermark, signature, text artefacts, oversaturated colours, harsh on-camera flash, plastic skin, duplicated features, cropped subject, jpeg compression artefacts, cluttered background, unnatural anatomy",--aspect 16:9,Flux urmărește bine limbajul natural descriptiv; păstrează frazele complete.
+2,image,general,flux,314,"SUBJECT
+O cana. This is the single focal point of the image and every other choice below exists to serve it. Render it prominently, unambiguously and in full — no part of the main subject is cropped away or hidden behind other elements.
+
+SETTING
+Placed in simplified setting with clear separation between subject and background. The environment supports the subject and never competes with it for attention; secondary elements stay subordinate in contrast and detail.
+
+COMPOSITION
+Flat frontal composition with everything on one plane, graphic and deliberately depthless. The frame is balanced and intentional, with a clear reading order from the primary subject outward.
+
+CAMERA
+Medium shot at eye level, subject occupying roughly two thirds of the frame, shot on 35mm at f/4, mild context inclusion. Perspective is natural and undistorted, with the plane of focus falling exactly on the subject.
+
+LIGHTING
+Dramatic side light with deep shadows and shaped highlights. A single coherent light direction governs the whole frame; highlights are shaped rather than blown out and shadows retain detail.
+
+COLOUR AND MOOD
+Warm terracotta and dusty rose against deep shadow, saturated but never fluorescent. The overall mood is warm, intimate and reassuring, carried by the light and the colour relationships rather than by added effects.
+
+STYLE
+Photorealistic, contemporary, restrained processing. The stylistic treatment stays consistent across the entire image, with no mixing of incompatible rendering approaches.
+
+DETAIL
+Clean, almost clinical rendering where every surface is described precisely and nothing is suggested. Every element in frame is there for a reason.
+
+TECHNICAL
+Photorealistic, ultra-detailed, sharp focus on the subject, natural depth of field, 8K resolution, professional colour grading.
+
+ADDITIONAL DIRECTION
+Coherent single light direction across the whole image.
+
+COHERENCE
+Every element in the frame is physically plausible: scale relationships hold, shadows fall consistently with the stated light direction, reflections match their sources, and materials behave the way real materials behave under this light.","blurry, low resolution, distorted proportions, extra limbs, malformed hands, watermark, signature, text artefacts, oversaturated colours, harsh on-camera flash, plastic skin, duplicated features, cropped subject, jpeg compression artefacts, cluttered background, unnatural anatomy",--aspect 16:9,Flux urmărește bine limbajul natural descriptiv; păstrează frazele complete.
+3,image,general,flux,315,"SUBJECT
+O cana. This is the single focal point of the image and every other choice below exists to serve it. Render it prominently, unambiguously and in full — no part of the main subject is cropped away or hidden behind other elements.
+
+SETTING
+Placed in richly detailed environment where every element reinforces the story. The environment supports the subject and never competes with it for attention; secondary elements stay subordinate in contrast and detail.
+
+COMPOSITION
+Off-balance framing with the subject pressed to one edge and the tension left unresolved. The frame is balanced and intentional, with a clear reading order from the primary subject outward.
+
+CAMERA
+Medium shot at eye level, subject occupying roughly two thirds of the frame, shot on 35mm at f/4, mild context inclusion. Perspective is natural and undistorted, with the plane of focus falling exactly on the subject.
+
+LIGHTING
+Soft directional key light with gentle fill, natural falloff. A single coherent light direction governs the whole frame; highlights are shaped rather than blown out and shadows retain detail.
+
+COLOUR AND MOOD
+Rich jewel palette of emerald, oxblood and antique gold with deep shadow density. The overall mood is warm, intimate and reassuring, carried by the light and the colour relationships rather than by added effects.
+
+STYLE
+Cinematic still with deliberate colour grading. The stylistic treatment stays consistent across the entire image, with no mixing of incompatible rendering approaches.
+
+DETAIL
+Soft-focus rendering with detail present but never harsh, edges bloomed slightly by the light. Every element in frame is there for a reason.
+
+TECHNICAL
+Highly detailed, physically accurate materials and light transport, no visible rendering artefacts.
+
+ADDITIONAL DIRECTION
+Coherent single light direction across the whole image.
+
+COHERENCE
+Every element in the frame is physically plausible: scale relationships hold, shadows fall consistently with the stated light direction, reflections match their sources, and materials behave the way real materials behave under this light.","blurry, low resolution, distorted proportions, extra limbs, malformed hands, watermark, signature, text artefacts, oversaturated colours, harsh on-camera flash, plastic skin, duplicated features, cropped subject, jpeg compression artefacts, cluttered background, unnatural anatomy",--aspect 16:9,Flux urmărește bine limbajul natural descriptiv; păstrează frazele complete.

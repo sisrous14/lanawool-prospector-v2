@@ -803,6 +803,6 @@ def platform_section(platform: str, mode: str, lang: str) -> Section | None:
         bullet="-",
         droppable=True,
         min_lines=1,
-        lead=_PLATFORM_LEAD[lang].format(label=entry.label),
+        lead=_PLATFORM_LEAD[lang].format(label=entry.display(lang)),
         expansions=lines[1:],
     )

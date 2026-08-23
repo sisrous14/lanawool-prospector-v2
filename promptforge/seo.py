@@ -15,8 +15,6 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
-from .catalog import known_fields
-from .models import Section
 from .vocab import normalize
 
 # Cuvinte care apar des în orice text și nu spun nimic despre subiect.

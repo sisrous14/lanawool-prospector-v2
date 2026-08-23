@@ -200,7 +200,19 @@ def _render_result(result: GeneratedPrompt, total: int, kind: str = "VARIANTA") 
     return "\n".join(parts)
 
 
+def _check_parts(parts: int | None) -> str | None:
+    """Un număr de părți sub 1 e o greșeală, nu «fără lanț»."""
+    if parts is not None and parts < 1:
+        return "--parts trebuie să fie cel puțin 1."
+    return None
+
+
 def _run_generation(args: argparse.Namespace, mode: str) -> int:
+    problema = _check_parts(getattr(args, "parts", None))
+    if problema:
+        print(f"Eroare: {problema}", file=sys.stderr)
+        return 2
+
     try:
         brief = _brief_from_args(args, mode)
     except ValueError as exc:
@@ -354,39 +366,84 @@ def _cmd_remix(args: argparse.Namespace) -> int:
 
 def _cmd_ask(args: argparse.Namespace) -> int:
     """Mod interactiv: întrebări scurte, prompt la final."""
+    del args
     print("PromptForge — mod interactiv. Enter pentru valoarea implicită.\n")
+
     idea = input("Ce vrei să obții? ").strip()
     if not idea:
         print("Fără idee nu pot genera nimic.", file=sys.stderr)
         return 2
 
-    mode_answer = input("Prompt pentru [t]ext sau [i]magine? (t) ").strip().lower()
-    mode = MODE_IMAGE if mode_answer.startswith("i") else MODE_TEXT
+    answer = input("Prompt pentru [t]ext, [i]magine, [v]ideo, [s]eo sau [a]utomat? (a) ")
+    mode = {
+        "t": MODE_TEXT, "i": MODE_IMAGE, "v": MODE_VIDEO, "s": MODE_SEO,
+    }.get(answer.strip().lower()[:1], "auto")
 
-    targets = IMAGE_TARGETS if mode == MODE_IMAGE else TEXT_TARGETS
-    print(f"Modele disponibile: {', '.join(sorted(targets))}")
-    target = input("Model-țintă? (implicit) ").strip() or None
+    if mode == "auto":
+        from .auto import decide
 
-    extra: dict[str, object] = {}
-    if mode == MODE_TEXT:
-        extra["audience"] = input("Pentru cine e textul? (opțional) ").strip() or None
-        extra["tone"] = input(f"Ton ({', '.join(sorted(TONES))})? (opțional) ").strip() or None
+        decision = decide(idea)
+        mode = str(decision.options["mode"])
+        print(f"  → aleg singur: {decision.explain()}")
+        options: dict[str, object] = {
+            key: value for key, value in decision.options.items() if key != "mode"
+        }
     else:
-        extra["style"] = input("Stil vizual impus? (opțional) ").strip() or None
-        extra["aspect"] = input("Raport de aspect? (automat) ").strip() or None
+        options = {}
 
+    targets = {
+        MODE_IMAGE: IMAGE_TARGETS, MODE_VIDEO: VIDEO_TARGETS,
+    }.get(mode, TEXT_TARGETS)
+    print(f"Modele disponibile: {', '.join(sorted(targets))}")
+    target = input("Model-țintă? (implicit) ").strip()
+    if target:
+        options["target"] = target
+
+    if mode == MODE_TEXT:
+        audience = input("Pentru cine e textul? (opțional) ").strip()
+        if audience:
+            options["audience"] = audience
+        tone = input(f"Ton ({', '.join(sorted(TONES))})? (opțional) ").strip()
+        if tone:
+            options["tone"] = tone
+    elif mode == MODE_SEO:
+        print("Lipește conținutul de optimizat, apoi o linie goală:")
+        lines: list[str] = []
+        while True:
+            line = input()
+            if not line.strip():
+                break
+            lines.append(line)
+        options["source_text"] = "\n".join(lines)
+    else:
+        style = input("Stil vizual impus? (opțional) ").strip()
+        if style:
+            options["style"] = style
+        aspect = input("Raport de aspect? (automat) ").strip()
+        if aspect:
+            options["aspect"] = aspect
+        if mode == MODE_VIDEO:
+            duration = input("Durata în secunde? (8) ").strip()
+            if duration.isdigit():
+                options["duration"] = int(duration)
+
+    platform = input(f"Platformă ({', '.join(sorted(PLATFORMS))})? (niciuna) ").strip()
+    if platform:
+        options["platform"] = platform
     must = input("Ceva ce trebuie neapărat inclus? (opțional) ").strip()
     avoid = input("Ceva de evitat? (opțional) ").strip()
 
-    brief = Brief(
-        idea=idea,
-        mode=mode,
-        target=target,
-        must=[must] if must else [],
-        avoid=[avoid] if avoid else [],
-        **extra,  # type: ignore[arg-type]
-    )
-    result = generate_many(brief, 1)[0]
+    try:
+        brief = Brief(
+            idea=idea, mode=mode,
+            must=[must] if must else [], avoid=[avoid] if avoid else [],
+            **options,  # type: ignore[arg-type]
+        )
+        result = generate_many(brief, 1)[0]
+    except ValueError as exc:
+        print(f"Eroare: {exc}", file=sys.stderr)
+        return 2
+
     print("\n" + _render_result(result, 1))
     history_store.save(brief, result)
     return 0
@@ -434,13 +491,21 @@ def _cmd_lists(_: argparse.Namespace) -> int:
 def _cmd_serve(args: argparse.Namespace) -> int:
     from .web import serve
 
-    serve(host=args.host, port=args.port, open_browser=not args.no_browser)
+    try:
+        serve(host=args.host, port=args.port, open_browser=not args.no_browser)
+    except OSError as exc:
+        print(
+            f"Nu am putut porni serverul pe {args.host}:{args.port} — {exc}. "
+            f"Alege alt port cu --port.",
+            file=sys.stderr,
+        )
+        return 2
     return 0
 
 
 def _read_source(args: argparse.Namespace) -> tuple[str, list[str]]:
     """Adună conținutul de optimizat: text scris, fișier, adresă sau poză."""
-    from .media import MediaError, is_url, load_page
+    from .media import load_page
     from .pipeline import analyze, load_all
 
     notes: list[str] = []
@@ -468,7 +533,6 @@ def _read_source(args: argparse.Namespace) -> tuple[str, list[str]]:
             "Textul sursă vine din analiza pozelor. Verifică-l: e descrierea "
             "modelului, nu ce ai fi scris tu."
         )
-        del MediaError, is_url
 
     return "\n\n".join(part for part in parts if part.strip()), notes
 
@@ -477,7 +541,6 @@ def _cmd_seo(args: argparse.Namespace) -> int:
     """Prompt SEO pornind de la conținutul tău."""
     from .llm import ModelUnavailable
     from .media import MediaError
-    from .seo import CONTENT_TYPES, INTENTS
     from .vision import VisionError
 
     try:
@@ -532,7 +595,6 @@ def _cmd_seo(args: argparse.Namespace) -> int:
     if not args.no_save:
         for result in results:
             history_store.save(brief, result)
-    del CONTENT_TYPES, INTENTS
     return code
 
 
@@ -673,6 +735,11 @@ def _cmd_auto(args: argparse.Namespace) -> int:
     """Programul alege singur modul, domeniul, ținta, formatul și lungimea."""
     from .auto import decide
     from .chain import ChainError, build as build_chain
+
+    problema = _check_parts(args.parts)
+    if problema:
+        print(f"Eroare: {problema}", file=sys.stderr)
+        return 2
 
     idea = " ".join(args.idea)
     given: dict[str, object] = {
@@ -1097,6 +1164,10 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except KeyboardInterrupt:
         print("\nÎntrerupt.", file=sys.stderr)
+        return 130
+    except EOFError:
+        # Intrare terminată în mijlocul unei întrebări: ieșim curat, nu cu urmă.
+        print("\nIntrare încheiată înainte de răspuns.", file=sys.stderr)
         return 130
 
 

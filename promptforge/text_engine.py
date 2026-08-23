@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 
 from .assembly import count_words, fit, range_note, render_section
-from .catalog import PLATFORMS
 from .depth import (
     EXTRA_AVOID,
     EXTRA_METHOD,
@@ -190,8 +189,8 @@ def build_sections(brief: Brief, domain: str, picker: Picker) -> tuple[list[Sect
     # --- CERINȚE OBLIGATORII ----------------------------------------------
     if lang == "ro":
         must_lines = [
-            f"Acoperă integral cererea. Dacă o parte din ea nu poate fi rezolvată corect, spune "
-            f"explicit care parte și de ce, în loc să o ocolești discret.",
+            "Acoperă integral cererea. Dacă o parte din ea nu poate fi rezolvată corect, spune "
+            "explicit care parte și de ce, în loc să o ocolești discret.",
             "Fii concret. Fiecare afirmație importantă vine cu motivul, exemplul sau cifra care o susține; "
             "recomandările includ pașii necesari pentru a fi puse în practică.",
             "Nu inventa fapte, cifre, surse, citate sau denumiri de produse. Când nu ești sigur, "

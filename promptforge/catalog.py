@@ -169,6 +169,17 @@ class Platform:
     rules: dict[str, dict[str, list[str]]] = field(default_factory=dict)
     limits: dict[str, str] = field(default_factory=dict)
     fields: dict[str, FieldLimit] = field(default_factory=dict)
+    label_en: str = ""     # doar unde numele conține cuvinte româneşti
+
+    def display(self, lang: str) -> str:
+        """Numele platformei în limba promptului.
+
+        Aproape toate numele sunt aceleași în orice limbă; „Google (Ads și
+        căutare)” nu e, iar un cuvânt românesc într-un prompt englezesc se vede.
+        """
+        if lang == "en" and self.label_en:
+            return self.label_en
+        return self.label
 
 
 @dataclass
@@ -365,6 +376,7 @@ PLATFORMS: dict[str, Platform] = {
     ),
     "google": Platform(
         "google", "Google (Ads și căutare)", "1.91:1", (1200, 628),
+        label_en="Google (Ads and Search)",
         alt_sizes={"patrat": (1200, 1200), "logo": (1200, 1200), "portret": (960, 1200)},
         limits={
             "ro": "Ads: titlu 30 de caractere, descriere 90. SEO: title 60, meta description 155.",

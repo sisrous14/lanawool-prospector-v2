@@ -550,7 +550,7 @@ bibliotecii standard.
 ```bash
 promptforge auto "..."   # programul alege singur (sau doar: promptforge "...")
 promptforge ask          # mod interactiv, cu întrebări
-promptforge verifica     # limitele de caractere ale platformei
+promptforge verifica --platform google --file anunt.txt   # limitele de caractere
 promptforge liste        # domeniile, țintele, platformele și tonurile
 promptforge modele       # modelele, cu eticheta de preț
 promptforge istoric      # ce ai generat până acum

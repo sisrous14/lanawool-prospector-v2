@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import csv
+import re
 import io
 import json
 import os
@@ -15,7 +17,7 @@ from pathlib import Path
 
 from promptforge import Brief, feedback, generate, generate_many, presets
 from promptforge.assembly import count_words, fit, range_note, sentence
-from promptforge.cli import main
+from promptforge.cli import main as _cli_main
 from promptforge.detect import detect_domain, keywords_of
 from promptforge.history import load, save
 from promptforge.image_engine import looks_romanian
@@ -41,9 +43,20 @@ from promptforge.models import MAX_ALLOWED_WORDS, PROMPT_WORD_CAP, Section
 from promptforge.pipeline import from_sources
 from promptforge.translate import forget, learn, learned, to_english
 from promptforge.vision import VisionError, analyze_images
-from promptforge.web import _decode_uploads
+from promptforge.web import _decode_uploads, _string_list
 from promptforge.targets import IMAGE_TARGETS, TEXT_TARGETS, VIDEO_TARGETS
 from promptforge.vocab import IMAGE_DOMAINS, TEXT_DOMAINS
+
+
+def main(argv):
+    """Rulează CLI-ul fără să-i verse ieșirea peste raportul testelor.
+
+    Erorile scrise pe stderr rămân vizibile doar dacă testul chiar eșuează:
+    le capturăm și le atașăm la mesaj, în loc să le tipărim mereu.
+    """
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        return _cli_main(argv)
 
 
 class TestBrief(unittest.TestCase):
@@ -1452,3 +1465,147 @@ class TestLantDePrompturi(unittest.TestCase):
 
     def test_cli_parts(self):
         self.assertEqual(main(["text", "un manual", "--parts", "3", "--no-save"]), 0)
+
+
+# ---------------------------------------------------------------------------
+# Regresii: defecte găsite la trecerea de verificare pe toată platforma
+# ---------------------------------------------------------------------------
+
+class TestValidareIntrari(unittest.TestCase):
+    """Valori care treceau tăcut și ajungeau stricate în prompt."""
+
+    def test_durata_negativa_e_respinsa(self):
+        with self.assertRaises(ValueError):
+            Brief(idea="x", mode="video", duration=-5)
+
+    def test_dimensiuni_negative_sunt_respinse(self):
+        with self.assertRaises(ValueError):
+            Brief(idea="x", mode="image", width=-5, height=-5)
+
+    def test_randurile_goale_nu_ajung_in_prompt(self):
+        brief = Brief(idea="x", must=["", "   ", "o cerință reală"], avoid=["", "ceva"])
+        self.assertEqual(brief.must, ["o cerință reală"])
+        self.assertEqual(brief.avoid, ["ceva"])
+
+    def test_promptul_negativ_nu_incepe_cu_virgula(self):
+        result = generate(Brief(idea="x", mode="image", avoid=["", "ceva"]))
+        self.assertFalse(result.negative_prompt.startswith(","))
+
+    def test_cerintele_nu_au_puncte_goale(self):
+        result = generate(Brief(idea="x", mode="text", must=["", "  "]))
+        self.assertNotRegex(result.prompt, r"^\s*\d+\.\s*$")
+
+    def test_spatiile_din_liste_sunt_curatate(self):
+        self.assertEqual(Brief(idea="x", must=["  ceva  "]).must, ["ceva"])
+
+
+class TestCaiDeEroare(unittest.TestCase):
+    def setUp(self):
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        os.environ["PROMPTFORGE_HOME"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def test_parts_sub_unu_e_respins(self):
+        for value in ("0", "-2"):
+            with self.subTest(parts=value):
+                self.assertEqual(main(["text", "x", "--parts", value, "--no-save"]), 2)
+                self.assertEqual(main(["auto", "x", "--parts", value, "--no-save"]), 2)
+
+    def test_parts_unu_e_valid(self):
+        self.assertEqual(main(["text", "x", "--parts", "1", "--no-save"]), 0)
+
+    def test_portul_ocupat_da_mesaj_nu_traceback(self):
+        import socket
+
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        try:
+            self.assertEqual(main(["serve", "--port", str(port), "--no-browser"]), 2)
+        finally:
+            holder.close()
+
+    def test_nicio_comanda_nu_arunca_traceback(self):
+        comenzi = [
+            ["text", "o idee", "--target", "zzz", "--no-save"],
+            ["image", "o idee", "--size", "zzz", "--no-save"],
+            ["seo", "--no-save"],
+            ["verifica", "--platform", "google", "text fara eticheta"],
+            ["serie", "--items", "unul", "--no-save"],
+            ["preset", "sterge", "inexistent"],
+            ["lexicon", "--adauga", "fara-egal"],
+            ["bun"],
+        ]
+        for argv in comenzi:
+            with self.subTest(argv=argv):
+                self.assertIn(main(argv), (0, 1, 2, 3))
+
+
+class TestValidareWeb(unittest.TestCase):
+    """Corpuri de cerere care veneau de afară și rupeau serverul."""
+
+    def test_lista_de_siruri_dintr_un_sir(self):
+        self.assertEqual(_string_list("un sir"), ["un sir"])
+        self.assertEqual(_string_list(["a", "", "  ", "b"]), ["a", "b"])
+        self.assertEqual(_string_list(None), [])
+        self.assertEqual(_string_list(7), [])
+
+    def test_un_sir_nu_se_desface_in_litere(self):
+        # `list("abc")` ar fi dat trei cerințe de câte o literă.
+        self.assertNotEqual(_string_list("abc"), ["a", "b", "c"])
+
+
+class TestCalitateaTextului(unittest.TestCase):
+    """Defecte vizibile în promptul livrat, pe toate modurile și limbile."""
+
+    TIPARE = [
+        (r"  +", "spații duble"),
+        (r"\s[.,;:]", "spațiu înaintea punctuației"),
+        (r"\{[a-z_]+\}", "șablon necompletat"),
+        (r"\bNone\b", "None în text"),
+        (r"^\s*[-*]\s*$", "punct de listă gol"),
+        (r"^\s*\d+\.\s*$", "element numerotat gol"),
+        (r",\s*,", "virgulă dublă"),
+        (r"<sectiune>", "etichetă generică"),
+    ]
+    ROMANA = re.compile(r"\b(și|sau|este|pentru|care|fără|către|dintre|trebuie)\b")
+
+    def _scan(self, text, eticheta):
+        for tipar, nume in self.TIPARE:
+            self.assertIsNone(
+                re.search(tipar, text, re.MULTILINE),
+                f"{eticheta}: {nume} — {re.search(tipar, text, re.MULTILINE)}",
+            )
+
+    def test_fara_defecte_pe_toate_modurile(self):
+        cazuri = [
+            ("text", {}), ("image", {}), ("video", {}),
+            ("seo", {"source_text": "Paine cu maia coapta zilnic in Cluj."}),
+        ]
+        for mode, extra in cazuri:
+            for lang in ("ro", "en"):
+                with self.subTest(mode=mode, lang=lang):
+                    result = generate(Brief(
+                        idea="un pescar batran repara o plasa", mode=mode,
+                        lang=lang, must=["ceva"], avoid=["altceva"], **extra,
+                    ))
+                    self._scan(result.full_text(), f"{mode}/{lang}")
+
+    def test_prompturile_englezesti_nu_contin_romana(self):
+        for platform in PLATFORMS:
+            with self.subTest(platform=platform):
+                result = generate(Brief(idea="a coffee mug", mode="image",
+                                        platform=platform, lang="en"))
+                found = self.ROMANA.search(result.full_text())
+                self.assertIsNone(found, f"{platform}: {found.group(0) if found else ''}")
+
+    def test_verigile_nu_au_defecte(self):
+        for link in chain_build(Brief(idea="un manual despre paine", mode="text"), parts=4):
+            with self.subTest(veriga=link.variant):
+                self._scan(link.full_text(), f"veriga {link.variant}")
