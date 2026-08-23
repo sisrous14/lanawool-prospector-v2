@@ -74,6 +74,20 @@ def make_sender() -> Sender:
             raise ModelUnavailable(f"Eroare API ({exc.status_code}): {exc.message}") from exc
         except anthropic.APIConnectionError as exc:
             raise ModelUnavailable(f"Eroare de rețea: {exc}") from exc
+        except TypeError as exc:
+            # SDK-ul ridică TypeError, nu AuthenticationError, când nu găsește
+            # nicio credențială — și o face abia la trimitere, nu la construirea
+            # clientului. Fără asta, prima rulare fără cheie dă un traceback.
+            if "authentication" in str(exc).lower():
+                raise ModelUnavailable(
+                    "Nu am găsit credențiale Anthropic. Setează ANTHROPIC_API_KEY "
+                    "sau autentifică-te cu `ant auth login`."
+                ) from exc
+            raise ModelUnavailable(f"Cerere respinsă de SDK: {exc}") from exc
+        except Exception as exc:
+            # Plasă de siguranță: nimic din apelul către model nu are voie să
+            # iasă de aici ca traceback brut în fața utilizatorului.
+            raise ModelUnavailable(f"Apelul către model a eșuat: {exc}") from exc
 
         if response.stop_reason == "refusal":
             raise ModelUnavailable("Modelul a refuzat cererea.")

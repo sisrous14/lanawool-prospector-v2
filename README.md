@@ -630,6 +630,8 @@ toate într-un text gata de copiat.
 - Lanțul impune protocolul de continuare, dar nu poate verifica dacă modelul l-a
   respectat: blocul de stare îl lipești tu. Dacă o parte iese scurtă, o reiei
   singură, fără să reiei tot lanțul.
+- Fără credențiale Anthropic, comenzile care au nevoie de model ies cu codul 3
+  și un mesaj care spune ce lipsește. Restul programului merge mai departe.
 - Programul generează prompturi, nu conținut final. Textul SEO îl produce
   modelul căruia îi dai promptul; cu `--refine` face și pasul ăsta, dar tot un
   model îl face, nu programul.
@@ -637,5 +639,22 @@ toate într-un text gata de copiat.
 ## Teste
 
 ```bash
-python -m unittest discover tests -v
+python -m unittest discover tests
 ```
+
+Motorul local se testează fără nimic instalat. Două grupuri au nevoie de unelte
+și se sar curat fără ele:
+
+```bash
+pip install -e ".[dev]"        # anthropic, pillow, playwright, pyflakes
+playwright install chromium
+
+python -m unittest discover tests      # + contractul cu SDK-ul Anthropic
+python -m unittest tests.test_browser  # interfața web, într-un browser real
+```
+
+Testele de contract pornesc un server local care imită API-ul Messages și
+verifică forma cererii trimise — prind un nume de parametru greșit sau un bloc
+de conținut invalid, lucruri pe care un `sender` fals nu le-ar prinde. Testele
+de browser verifică ce nu poate verifica un test de server: comutarea modurilor,
+adunarea pozelor, mesajele de eroare, tema, și că nu apare nimic în consolă.

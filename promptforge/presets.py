@@ -54,18 +54,25 @@ def save(name: str, options: dict) -> dict:
         key: value for key, value in options.items()
         if value not in (None, "", [], 0) or key == "seed"
     }
-    presets = all_presets()
-    presets[name.strip()] = cleaned
-    store.write_json(FILE, presets)
+    def adauga(current: object) -> dict:
+        saved = dict(current) if isinstance(current, dict) else {}
+        saved[name.strip()] = cleaned
+        return saved
+
+    store.update_json(FILE, adauga, {})
     return cleaned
 
 
 def delete(name: str) -> None:
-    presets = all_presets()
-    if name not in presets:
+    if name not in all_presets():
         raise PresetError(f"Nu am profilul {name!r}.")
-    del presets[name]
-    store.write_json(FILE, presets)
+
+    def sterge(current: object) -> dict:
+        saved = dict(current) if isinstance(current, dict) else {}
+        saved.pop(name, None)
+        return saved
+
+    store.update_json(FILE, sterge, {})
 
 
 def apply(name: str, overrides: dict) -> dict:

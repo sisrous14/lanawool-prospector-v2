@@ -11,7 +11,9 @@ import json
 import os
 import struct
 import tempfile
+import threading
 import unittest
+import unittest.mock
 import zlib
 from pathlib import Path
 
@@ -43,7 +45,7 @@ from promptforge.models import MAX_ALLOWED_WORDS, PROMPT_WORD_CAP, Section
 from promptforge.pipeline import from_sources
 from promptforge.translate import forget, learn, learned, to_english
 from promptforge.vision import VisionError, analyze_images
-from promptforge.web import _decode_uploads, _string_list
+from promptforge.web import _decode_uploads, _page as _web_page, _string_list
 from promptforge.targets import IMAGE_TARGETS, TEXT_TARGETS, VIDEO_TARGETS
 from promptforge.vocab import IMAGE_DOMAINS, TEXT_DOMAINS
 
@@ -610,11 +612,14 @@ class TestCLISurse(unittest.TestCase):
             )
 
     def test_vision_semnaleaza_lipsa_modelului(self):
+        # Fie pachetul lipsește, fie credențialele: în ambele cazuri, cod 3 și
+        # un mesaj care spune ce lipsește — niciodată un traceback.
+        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
+            os.environ.pop(key, None)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "a.png"
             path.write_bytes(TestMedia.PNG)
-            # Fără pachetul `anthropic` instalat, codul 3 spune exact asta.
-            self.assertIn(main(["vision", str(path), "--no-save"]), (0, 3))
+            self.assertEqual(main(["vision", str(path), "--no-save"]), 3)
 
 
 class TestIncarcareWeb(unittest.TestCase):
@@ -1609,3 +1614,237 @@ class TestCalitateaTextului(unittest.TestCase):
         for link in chain_build(Brief(idea="un manual despre paine", mode="text"), parts=4):
             with self.subTest(veriga=link.variant):
                 self._scan(link.full_text(), f"veriga {link.variant}")
+
+
+# ---------------------------------------------------------------------------
+# Concurență pe starea de pe disc
+# ---------------------------------------------------------------------------
+
+class TestScrieriParalele(unittest.TestCase):
+    """Două comenzi date odată scriu în aceleași fișiere."""
+
+    def setUp(self):
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        self.home = tempfile.mkdtemp()
+        os.environ["PROMPTFORGE_HOME"] = self.home
+
+    def tearDown(self):
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def _in_paralel(self, work, count=6):
+        erori: list[str] = []
+
+        def ruleaza(index):
+            try:
+                work(index)
+            except Exception as exc:                      # noqa: BLE001
+                erori.append(f"{type(exc).__name__}: {exc}")
+
+        fire = [threading.Thread(target=ruleaza, args=(i,)) for i in range(count)]
+        for f in fire:
+            f.start()
+        for f in fire:
+            f.join()
+        return erori
+
+    def test_feedback_nu_pierde_si_nu_cade(self):
+        erori = self._in_paralel(
+            lambda i: [feedback.record([f"d{i}-{k}"], good=True) for k in range(10)]
+        )
+        self.assertEqual(erori, [])
+        liked, _ = feedback.preferences()
+        self.assertEqual(len(liked), 60)
+
+    def test_profilurile_nu_se_pierd(self):
+        erori = self._in_paralel(
+            lambda i: [presets.save(f"p{i}-{k}", {"target": "flux"}) for k in range(10)]
+        )
+        self.assertEqual(erori, [])
+        self.assertEqual(len(presets.all_presets()), 60)
+
+    def test_lexiconul_nu_se_pierde(self):
+        erori = self._in_paralel(
+            lambda i: [learn(f"cuvant{i}-{k}", f"word{i}-{k}") for k in range(10)]
+        )
+        self.assertEqual(erori, [])
+        self.assertEqual(len(learned()), 60)
+
+    def test_nu_raman_fisiere_temporare(self):
+        self._in_paralel(lambda i: [feedback.record([f"x{i}-{k}"], good=True) for k in range(5)])
+        self.assertEqual(list(Path(self.home).glob("*.tmp")), [])
+
+    def test_istoricul_suporta_scrieri_paralele(self):
+        brief = Brief(idea="o idee", mode="text")
+        result = generate(brief)
+        path = Path(self.home) / "h.jsonl"
+        erori = self._in_paralel(lambda i: [save(brief, result, path=path) for _ in range(15)])
+        self.assertEqual(erori, [])
+        self.assertEqual(len(load(limit=1000, path=path)), 90)
+
+    def test_temporarul_are_nume_unic(self):
+        # Cu un nume fix, două scrieri simultane își furau fișierul una alteia.
+        import promptforge.store as store_module
+
+        nume = set()
+        original = Path.replace
+
+        def spion(self, target):
+            nume.add(self.name)
+            return original(self, target)
+
+        with unittest.mock.patch.object(Path, "replace", spion):
+            store_module.write_json("a.json", {"x": 1})
+            store_module.write_json("a.json", {"x": 2})
+        self.assertEqual(len(nume), 2, f"același nume de temporar: {nume}")
+
+
+# ---------------------------------------------------------------------------
+# Interfața web: pagina servită
+# ---------------------------------------------------------------------------
+
+class TestPaginaServita(unittest.TestCase):
+    def test_pictograma_e_servita(self):
+        # Browserul o cere singur la fiecare încărcare; un 404 umple consola.
+        from promptforge.web import FAVICON
+
+        self.assertIn(b"<svg", FAVICON)
+        self.assertIn(b'href="/favicon.svg"', _web_page())
+
+    def test_pagina_declara_toate_modurile(self):
+        pagina = _web_page().decode("utf-8")
+        for mod in ("auto", "text", "image", "video", "seo", "vision"):
+            with self.subTest(mod=mod):
+                self.assertIn(f'id="mode-{mod}"', pagina)
+
+
+# ---------------------------------------------------------------------------
+# Contractul cu SDK-ul Anthropic (rulează doar dacă pachetul e instalat)
+# ---------------------------------------------------------------------------
+
+def _sdk_disponibil() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("anthropic") is not None
+
+
+@unittest.skipUnless(_sdk_disponibil(), "pachetul `anthropic` nu e instalat")
+class TestContractSDK(unittest.TestCase):
+    """Verifică forma cererii trimise, cu un server care imită API-ul.
+
+    Nu atinge rețeaua: pornește un server local și îi spune SDK-ului să
+    vorbească cu el. Prinde exact ce n-ar prinde un `sender` fals — un nume
+    de parametru greșit sau un bloc de conținut invalid.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        cls.cereri: list[dict] = []
+        cls.raspuns = {"text": "<<<PROMPT>>>\nUn prompt rafinat de test.\n"}
+        cereri, raspuns = cls.cereri, cls.raspuns
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):                            # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                cereri.append(json.loads(self.rfile.read(length).decode()))
+                corp = json.dumps({
+                    "id": "msg_test", "type": "message", "role": "assistant",
+                    "model": "claude-opus-5", "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "content": [{"type": "text", "text": raspuns["text"]}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(corp)))
+                self.end_headers()
+                self.wfile.write(corp)
+
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        self.cereri.clear()
+        # Răspunsul e ținut pe clasă, deci trebuie readus la starea de plecare:
+        # altfel un test îl schimbă și îl moștenește următorul.
+        self.raspuns["text"] = "<<<PROMPT>>>\nUn prompt rafinat de test.\n"
+        self._env = {k: os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")}
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test-fals"
+        os.environ["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{self.port}"
+
+    def tearDown(self):
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_rafinarea_trimite_parametrii_asteptati(self):
+        from promptforge.refine import refine
+
+        brief = Brief(idea="o aplicatie de bugetare", mode="text")
+        result = refine(brief, generate(brief))
+        self.assertIn("rafinat", result.prompt)
+
+        corp = self.cereri[-1]
+        self.assertEqual(corp["model"], "claude-opus-5")
+        self.assertEqual(corp["thinking"], {"type": "adaptive"})
+        self.assertEqual(corp["output_config"], {"effort": "high"})
+        self.assertTrue(corp["system"])
+        self.assertEqual(corp["messages"][0]["role"], "user")
+
+    def test_analiza_trimite_toate_imaginile(self):
+        from promptforge.pipeline import from_sources
+
+        self.raspuns["text"] = json.dumps({
+            "domain": "portret", "subject": "an elderly fisherman",
+            "lighting": "soft dawn light", "aspect": "3:2",
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            primul, doilea = Path(tmp) / "a.png", Path(tmp) / "b.png"
+            primul.write_bytes(TestDimensiuniImagine._png(1200, 800))
+            doilea.write_bytes(TestDimensiuniImagine._png(800, 1200))
+            _, rezultate = from_sources([str(primul), str(doilea)], "combina-le")
+
+        self.assertIn("elderly fisherman", rezultate[0].prompt)
+        blocuri = self.cereri[-1]["messages"][0]["content"]
+        imagini = [b for b in blocuri if b["type"] == "image"]
+        self.assertEqual(len(imagini), 2)
+        self.assertEqual(imagini[0]["source"]["type"], "base64")
+        self.assertEqual(imagini[0]["source"]["media_type"], "image/png")
+
+    def test_lipsa_credentialelor_da_mesaj_nu_traceback(self):
+        # SDK-ul ridică TypeError, nu AuthenticationError, și abia la trimitere.
+        # Fără tratare, prima rulare fără cheie dădea un traceback.
+        from promptforge.llm import ModelUnavailable, make_sender
+
+        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
+            os.environ.pop(key, None)
+        send = make_sender()
+        with self.assertRaises(ModelUnavailable) as caught:
+            send(system="s", content=[{"type": "text", "text": "x"}],
+                 model="claude-opus-5", effort="high")
+        self.assertIn("credențiale", str(caught.exception).lower())
+
+    def test_raspunsul_fara_json_da_eroare_clara(self):
+        from promptforge.pipeline import from_sources
+
+        self.raspuns["text"] = "nu pot analiza imaginea"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.png"
+            path.write_bytes(TestDimensiuniImagine._png(800, 600))
+            with self.assertRaises(VisionError):
+                from_sources([str(path)], "descrie")

@@ -44,6 +44,7 @@ PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PromptForge</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
   :root {
     --bg: #fbfaf8; --fg: #1c1b19; --muted: #6b6862; --line: #e2ded7;
@@ -554,6 +555,14 @@ function render(r) {
 """
 
 
+# Pictogramă simplă, servită din memorie: un „P” pe fundalul cărămiziu al paginii.
+FAVICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<rect width="64" height="64" rx="14" fill="#9a4a2f"/>'
+    '<text x="32" y="45" font-family="system-ui,sans-serif" font-size="38" '
+    'font-weight="700" fill="#fff" text-anchor="middle">P</text></svg>'
+).encode("utf-8")
+
 MAX_JSON_BYTES = 100_000
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024
 
@@ -694,6 +703,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - semnătură impusă
         if self.path in ("/", "/index.html"):
             self._send(200, _page(), "text/html; charset=utf-8")
+        elif self.path in ("/favicon.svg", "/favicon.ico"):
+            # Browserele o cer singure la fiecare încărcare; fără ea, consola
+            # se umple de 404-uri care nu înseamnă nimic.
+            self._send(200, FAVICON, "image/svg+xml")
         else:
             self._send_json(404, {"error": "Pagină inexistentă"})
 

@@ -26,14 +26,23 @@ def _load() -> dict[str, int]:
 
 
 def record(descriptors: list[str], good: bool) -> dict[str, int]:
-    """Notează descriptorii unui rezultat ca buni sau slabi."""
-    scores = _load()
+    """Notează descriptorii unui rezultat ca buni sau slabi.
+
+    Sub încuietoare: două comenzi `bun` date în paralel se adună, nu se anulează.
+    """
     step = 1 if good else -1
-    for descriptor in descriptors:
-        if descriptor:
-            scores[descriptor] = scores.get(descriptor, 0) + step
-    store.write_json(FILE, scores)
-    return scores
+
+    def aduna(current: object) -> dict[str, int]:
+        scores = {
+            key: int(value) for key, value in (current or {}).items()  # type: ignore[union-attr]
+            if isinstance(value, (int, float))
+        } if isinstance(current, dict) else {}
+        for descriptor in descriptors:
+            if descriptor:
+                scores[descriptor] = scores.get(descriptor, 0) + step
+        return scores
+
+    return store.update_json(FILE, aduna, {})
 
 
 def preferences() -> tuple[set[str], set[str]]:

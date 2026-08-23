@@ -289,20 +289,25 @@ def learn(romanian: str, english: str) -> None:
     value = english.strip()
     if not key or not value or key == normalize(value):
         return
-    data = store.read_json(LEXICON_FILE, {})
-    if not isinstance(data, dict):
-        data = {}
-    data[key] = value
-    store.write_json(LEXICON_FILE, data)
+    def adauga(current: object) -> dict:
+        data = dict(current) if isinstance(current, dict) else {}
+        data[key] = value
+        return data
+
+    store.update_json(LEXICON_FILE, adauga, {})
 
 
 def forget(romanian: str) -> bool:
-    data = store.read_json(LEXICON_FILE, {})
     key = normalize(romanian).strip()
-    if not isinstance(data, dict) or key not in data:
+    if key not in learned():
         return False
-    del data[key]
-    store.write_json(LEXICON_FILE, data)
+
+    def sterge(current: object) -> dict:
+        data = dict(current) if isinstance(current, dict) else {}
+        data.pop(key, None)
+        return data
+
+    store.update_json(LEXICON_FILE, sterge, {})
     return True
 
 
