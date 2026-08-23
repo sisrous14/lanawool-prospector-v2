@@ -7,3 +7,8 @@ dist/
 venv/
 .pytest_cache/
 .promptforge/
+
+# Ieșiri generate de --export sau --out, dacă rulezi comenzile în directorul proiectului
+*.csv
+brief.md
+prompturi.*
