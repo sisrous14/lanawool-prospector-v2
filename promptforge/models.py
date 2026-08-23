@@ -7,9 +7,11 @@ from typing import Any
 
 MODE_TEXT = "text"
 MODE_IMAGE = "image"
+MODE_VIDEO = "video"
 
 DEFAULT_MIN_WORDS = 300
 DEFAULT_MAX_WORDS = 500
+MAX_ALLOWED_WORDS = 3000
 
 
 @dataclass
@@ -23,8 +25,12 @@ class Brief:
     audience: str | None = None
     tone: str | None = None
     style: str | None = None           # doar pentru imagine: stil impus
-    aspect: str | None = None          # doar pentru imagine
+    aspect: str | None = None          # pentru imagine și video
+    duration: int = 0                  # secunde, doar pentru video; 0 = implicit
     subject: str | None = None         # doar pentru imagine: subiectul, formulat în engleză
+    platform: str | None = None        # tiktok, instagram, facebook, google, youtube, linkedin, x
+    width: int = 0                     # dimensiunea-țintă în pixeli; 0 = nespecificată
+    height: int = 0
     overrides: dict[str, str] = field(default_factory=dict)  # câmpuri venite din analiza unei imagini
     transfer: str = ""                 # ce s-a preluat din care imagine, la combinarea a două poze
     extra_negatives: list[str] = field(default_factory=list)
@@ -39,18 +45,35 @@ class Brief:
         if not self.idea or not self.idea.strip():
             raise ValueError("Ideea nu poate fi goală.")
         self.idea = " ".join(self.idea.split())
-        if self.mode not in (MODE_TEXT, MODE_IMAGE):
-            raise ValueError(f"Mod necunoscut: {self.mode!r} (folosește 'text' sau 'image').")
+        if self.mode not in (MODE_TEXT, MODE_IMAGE, MODE_VIDEO):
+            raise ValueError(
+                f"Mod necunoscut: {self.mode!r} (folosește 'text', 'image' sau 'video')."
+            )
         if self.lang is None:
             # Prompturile de text sunt implicit în română, cele de imagine în
             # engleză: modelele de imagine sunt antrenate pe termeni englezești.
-            self.lang = "en" if self.mode == MODE_IMAGE else "ro"
+            self.lang = "en" if self.mode in (MODE_IMAGE, MODE_VIDEO) else "ro"
         if self.lang not in ("ro", "en"):
             raise ValueError(f"Limbă nesuportată: {self.lang!r} (folosește 'ro' sau 'en').")
         if self.min_words < 50:
             raise ValueError("min_words trebuie să fie cel puțin 50.")
         if self.max_words <= self.min_words:
             raise ValueError("max_words trebuie să fie mai mare decât min_words.")
+        if self.platform is not None:
+            from .catalog import PLATFORMS
+
+            if self.platform not in PLATFORMS:
+                raise ValueError(
+                    f"Platformă necunoscută: {self.platform!r}. "
+                    f"Disponibile: {', '.join(sorted(PLATFORMS))}"
+                )
+        if (self.width > 0) != (self.height > 0):
+            raise ValueError("Dimensiunea are nevoie și de lățime, și de înălțime.")
+        if self.max_words > MAX_ALLOWED_WORDS:
+            raise ValueError(
+                f"max_words nu poate depăși {MAX_ALLOWED_WORDS}. Peste atât, un prompt "
+                f"devine mai greu de urmărit de model decât de scris de tine."
+            )
 
 
 @dataclass
@@ -71,6 +94,9 @@ class Section:
     droppable: bool = False
     min_lines: int = 1
     lead: str = ""         # rând introductiv, nemarcat și niciodată tăiat
+    expansions: list[str] = field(default_factory=list)
+    # Rânduri adăugate doar când bugetul de cuvinte e mai mare decât are nevoie
+    # promptul de bază. La 300 de cuvinte nu apar; la 2000, da.
 
 
 @dataclass
@@ -87,6 +113,8 @@ class GeneratedPrompt:
     parameters: str = ""
     notes: list[str] = field(default_factory=list)
     refined_by: str = ""   # numele modelului, dacă promptul a trecut prin --refine
+    used_descriptors: list[str] = field(default_factory=list)
+    # Descriptorii aleși din vocabular, ca `promptforge bun` să știe ce să noteze.
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

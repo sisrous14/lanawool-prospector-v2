@@ -110,3 +110,57 @@ IMAGE_TARGETS: dict[str, dict] = {
 
 def default_image_target() -> str:
     return "flux"
+
+
+# --- ȚINTE PENTRU VIDEO ----------------------------------------------------
+
+VIDEO_TARGETS: dict[str, dict] = {
+    "sora": {
+        "label": "Sora",
+        "layout": "prose",
+        "negative": "none",
+        "params": "Duration: {duration}s | Aspect: {aspect}",
+        "notes": [
+            "Sora citește o descriere continuă; mișcarea de cameră trebuie spusă explicit, nu sugerată.",
+            "Nu are prompt negativ: interdicțiile au fost reformulate ca cerințe pozitive.",
+        ],
+    },
+    "veo": {
+        "label": "Veo",
+        "layout": "prose",
+        "negative": "none",
+        "params": "Duration: {duration}s | Aspect: {aspect}",
+        "notes": [
+            "Veo generează și sunet: secțiunea de audio contează, nu e decorativă.",
+        ],
+    },
+    "kling": {
+        "label": "Kling",
+        "layout": "blocks",
+        "negative": "prompt",
+        "params": "Duration: {duration}s | Aspect: {aspect} | Mode: professional",
+        "notes": [
+            "Kling folosește prompt negativ; e cel mai bun când pornește de la o imagine dată.",
+        ],
+    },
+    "runway": {
+        "label": "Runway",
+        "layout": "blocks",
+        "negative": "prompt",
+        "params": "Duration: {duration}s | Aspect: {aspect}",
+        "notes": [
+            "Runway răspunde bine la instrucțiuni scurte și explicite de mișcare a camerei.",
+        ],
+    },
+    "generic-video": {
+        "label": "Generic (video)",
+        "layout": "blocks",
+        "negative": "prompt",
+        "params": "Duration: {duration}s | Aspect: {aspect}",
+        "notes": ["Format neutru pentru orice generator video."],
+    },
+}
+
+
+def default_video_target() -> str:
+    return "veo"

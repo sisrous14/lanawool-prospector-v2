@@ -1,17 +1,19 @@
 # PromptForge
 
-Transformă o idee scrisă în două rânduri într-un prompt detaliat de 300–500 de
-cuvinte, gata de dat unui model de text sau de imagine.
+Transformă o idee scrisă în două rânduri într-un prompt detaliat — de la 300
+până la 3000 de cuvinte — pentru modele de text, de imagine sau de video.
 
 Motorul rulează local, fără dependențe și fără internet. Opțional, promptul
-poate fi rescris de un model Claude, care îl adaptează mai fin la ideea ta.
+poate fi rescris de un model Claude, sau construit pornind de la pozele tale.
 
 ```
 $ promptforge text "o aplicatie care imi urmareste cheltuielile lunare"
 $ promptforge image "portret al unui pescar batran" --target midjourney
+$ promptforge video "o reclama la cafea" --platform tiktok --duration 15
 $ promptforge vision poza.jpg --instruct "vreau un prompt care sa refaca lumina asta"
 $ promptforge remix stil.jpg subiect.jpg --take lumina si paleta
-$ promptforge serve          # interfață web locală
+$ promptforge modele          # ce modele există și care sunt gratis
+$ promptforge serve           # interfață web locală
 ```
 
 ## Instalare
@@ -75,6 +77,12 @@ lista lucrurilor de evitat.
 | `--audience` | pentru cine e textul |
 | `--tone` | un ton din listă sau o descriere liberă |
 | `--lang` | `ro` (implicit) sau `en` — limba promptului generat |
+| `--platform` | tiktok, instagram, facebook, google, youtube, linkedin, x |
+| `--preset` | profil salvat, ca să nu repeți opțiunile |
+
+Domeniile de text acoperă și cazuri specifice: `cod` pentru programe,
+`descriere-imagini` pentru alt text și legende, `marketing`, `analiza`,
+`naratiune`, `business`, `email`, `social`, `educatie`, `ux`, `articol`.
 
 ## Prompturi pentru imagine
 
@@ -120,6 +128,60 @@ ajustezi. Termenii tehnici — `85mm at f/1.8`, `softbox`, `golden hour` — ră
 | `--subject` | subiectul formulat în engleză |
 | `--style` | impune un stil vizual în locul celui ales automat |
 | `--aspect` | raportul de aspect (altfel se alege după domeniu) |
+
+## Platforme: TikTok, Instagram, Facebook, Google…
+
+Fiecare rețea are alte reguli, iar programul le știe pe ale ei — inclusiv
+limitele de caractere, care sunt cele mai des ignorate:
+
+```bash
+promptforge text "anunt pentru o brutarie" --platform google
+promptforge image "un produs pe masa" --platform instagram
+promptforge video "prezentarea produsului" --platform tiktok --duration 20
+```
+
+Un prompt pentru Google Ads primește limita exactă de 30 de caractere pentru
+titlu și 90 pentru descriere. Unul pentru TikTok primește regula celor 3 secunde
+și zona sigură de sub interfață. Unul pentru Facebook, pragul de 20% text pe
+imagine. Platforma stabilește și raportul de aspect, dacă nu îl dai tu.
+
+Regulile intră în prompt în limba promptului: română la `--lang ro`, engleză la
+prompturile de imagine și video.
+
+## Dimensiuni
+
+Programul înțelege dimensiunile în pixeli, în trei feluri.
+
+```bash
+promptforge image "un afis" --size 2480x3508      # dimensiune exactă
+promptforge image "un reel" --size tiktok          # nume de platformă
+promptforge image "un banner" --size fullhd        # nume uzual
+```
+
+Din dimensiune calculează raportul de aspect (`2480×3508` → `7:10`) și adaugă în
+prompt un bloc de specificație: compune pentru cadrul ăsta, cu detaliul care
+rezistă la exact atâția pixeli.
+
+Când îi dai o poză prin `vision` sau `remix`, îi citește dimensiunile direct din
+antetul fișierului — PNG, JPEG, GIF și WebP, fără nicio bibliotecă externă — și
+folosește raportul real al pozei.
+
+## Prompturi pentru video
+
+```bash
+promptforge video "un pescar repara o plasa pe chei" --target veo --duration 10
+```
+
+Un clip nu e o imagine care se mișcă, așa că blocurile sunt altele: acțiune
+continuă, mișcare de cameră, ritm, fizica mișcării, sunet, cadru de început și
+de final. Peste ele se adaugă disciplina vizuală comună cu imaginea — lumina
+care nu are voie să pâlpâie între cadre, geometria care trebuie să reziste
+în timp ce camera se mișcă.
+
+| Țintă | Format |
+|---|---|
+| `sora`, `veo` | paragraf continuu, fără prompt negativ |
+| `kling`, `runway` | blocuri etichetate, cu prompt negativ |
 
 ## Poze și linkuri
 
@@ -169,6 +231,95 @@ adrese, deci le descarcă modelul, nu programul. Peste 5 MB o poză e
 redimensionată automat dacă ai Pillow instalat, altfel primești un mesaj clar.
 Fără poze și fără linkuri, programul nu face niciun apel de rețea.
 
+## Alegerea modelului
+
+```bash
+promptforge modele
+promptforge modele --kind image
+```
+
+Îți listează toate țintele, cu eticheta de preț în dreptul fiecăreia —
+`gratis`, `freemium` sau `platit` — și o notă cu ce înseamnă concret: „Flux
+schnell are greutăți deschise și e gratuit local; Flux pro se plătește la
+imagine.”
+
+Etichetele sunt o orientare de la momentul scrierii, nu o garanție. Prețurile și
+nivelurile gratuite se schimbă des, iar comanda îți spune și ea asta la final.
+În interfața web, eticheta apare direct în lista de modele.
+
+## Cât de lung să fie promptul
+
+Implicit 300–500 de cuvinte. Poți cere până la 3000:
+
+```bash
+promptforge text "un plan de afaceri" --min-words 1500 --max-words 2000
+```
+
+Peste bugetul de bază, programul nu repetă ce a spus deja: adaugă secțiuni
+noi cu conținut real — criterii de acceptanță, moduri tipice de eșec, tratarea
+cifrelor, prioritizare în caz de conflict; la imagini, planurile de adâncime,
+caracterul obiectivului, structura contrastului, logica spațiului.
+
+Două lucruri pe care ți le spune singur: peste circa 1200 de cuvinte te
+avertizează că modelele urmăresc tot mai slab instrucțiunile de la mijloc, iar
+dacă materialul se termină înainte de minimul cerut, îți spune la ce număr s-a
+oprit în loc să umple cu vorbe. În practică ajunge la circa 2900 de cuvinte
+pentru text și 2800 pentru imagine.
+
+## Profiluri salvate
+
+Opțiunile pe care le repeți de fiecare dată:
+
+```bash
+promptforge preset salveaza produsele-mele \
+  --set target=flux --set "style=studio product photography" --set aspect=1:1
+
+promptforge image "o cana de cafea" --preset produsele-mele
+promptforge preset lista
+promptforge preset sterge produsele-mele
+```
+
+Ce dai în linia de comandă bate întotdeauna profilul; `--must` și `--avoid` se
+adună în loc să se înlocuiască.
+
+## Învață ce îți place
+
+```bash
+promptforge image "un portret"
+promptforge bun                    # rezultatul de mai sus a fost reușit
+promptforge preferinte             # ce a reținut
+```
+
+Fiecare prompt reține descriptorii pe care i-a ales din vocabular. `bun` le
+crește scorul, `slab` îl scade, iar generările următoare înclină spre cei
+preferați și îi ocolesc pe ceilalți. Nu e învățare automată, e o listă de
+preferințe pe care o poți citi și edita: `~/.promptforge/feedback.json`.
+
+## Audit de prompt
+
+```bash
+promptforge audit "Deseneaza o pisica frumoasa" --mode image
+promptforge audit --file promptul-meu.txt
+```
+
+Verifică ce părți standard lipsesc dintr-un prompt existent și dă un scor.
+Verificarea e locală, pe cuvinte-cheie: nu poate spune dacă un prompt e *bun*,
+dar un scor mic arată aproape sigur o problemă.
+
+## Lexiconul care crește
+
+Când corectezi traducerea unui subiect cu `--subject`, perechea se reține:
+
+```bash
+promptforge image "un pescar batran" --subject "an old fisherman"
+promptforge lexicon                          # ce a învățat
+promptforge lexicon --adauga "manete=levers"
+promptforge lexicon --uita "manete"
+```
+
+Data viitoare traduce singur. Lexiconul offline se îmbogățește cu fiecare
+corecție, fără niciun apel de rețea.
+
 ## Variante și reproductibilitate
 
 `--variants 3` dă trei direcții creative diferite pentru aceeași idee — altă
@@ -199,11 +350,19 @@ raționamentului cu `--effort low|medium|high|xhigh|max`.
 promptforge serve
 ```
 
-Pornește o pagină locală pe `http://127.0.0.1:8765`, cu trei moduri: **Text**,
-**Imagine** și **Din poze**. În ultimul poți alege mai multe fișiere sau lipi
-adrese, le vezi ca miniaturi numerotate („imaginea 1”, „imaginea 2”) și scrii în
-căsuța de dedesubt ce vrei — inclusiv „ia lumina din imaginea 1 și pune-o peste
-subiectul din imaginea 2”.
+Pornește o pagină locală pe `http://127.0.0.1:8765`, cu patru moduri: **Text**,
+**Imagine**, **Video** și **Din poze**.
+
+În modul *Din poze* ai o zonă în care poți **trage pozele direct**, le poți alege
+cu un clic sau le poți **lipi cu Ctrl+V**. Se adaugă la cele existente în loc să
+le înlocuiască, deci poți construi setul pe rând, în aceeași sesiune. Fiecare
+apare ca miniatură numerotată („imaginea 1”, „imaginea 2”) și are un buton de
+scos. În căsuța de dedesubt scrii ce vrei — inclusiv „ia lumina din imaginea 1 și
+pune-o peste subiectul din imaginea 2”.
+
+Lista de modele arată eticheta de preț lângă fiecare nume, iar sub ea apare nota
+cu ce înseamnă concret. Mai ai platformă, dimensiune (cu sugestii) și durată
+pentru video.
 
 Serverul ascultă doar pe interfața locală și nu are dependențe în afara
 bibliotecii standard.
@@ -212,13 +371,18 @@ bibliotecii standard.
 
 ```bash
 promptforge ask          # mod interactiv, cu întrebări
-promptforge liste        # domeniile, țintele și tonurile disponibile
+promptforge liste        # domeniile, țintele, platformele și tonurile
+promptforge modele       # modelele, cu eticheta de preț
 promptforge istoric      # ce ai generat până acum
 promptforge istoric --full
+promptforge preferinte   # ce a învățat din feedback
+promptforge lexicon      # traducerile reținute
 ```
 
-Istoricul se scrie în `~/.promptforge/history.jsonl`; schimbi locația cu
-variabila de mediu `PROMPTFORGE_HOME`, iar `--no-save` nu salvează nimic.
+Totul se scrie în `~/.promptforge/`: `history.jsonl` (istoricul),
+`presets.json` (profilurile), `feedback.json` (preferințele) și `lexicon.json`
+(traducerile învățate). Schimbi locația cu `PROMPTFORGE_HOME`, iar `--no-save`
+nu salvează nimic în istoric.
 
 ## Ca bibliotecă
 
@@ -272,6 +436,12 @@ toate într-un text gata de copiat.
 - `vision` și `remix` au nevoie de un model, deci de pachetul `anthropic` și de
   credențiale. Fără ele, comenzile ies cu un mesaj care spune exact ce lipsește;
   restul programului merge mai departe.
+- Bugetul de 3000 de cuvinte e atins în practică pe la 2900 la text și 2800 la
+  imagine. Când materialul se termină, programul ți-o spune; nu inventează
+  umplutură ca să atingă cifra.
+- Etichetele de preț ale modelelor sunt de la momentul scrierii. Se schimbă des.
+- Auditul verifică structura, nu calitatea. Un scor de 100 nu garantează un
+  prompt bun, dar unul mic arată aproape sigur ceva lipsă.
 
 ## Teste
 

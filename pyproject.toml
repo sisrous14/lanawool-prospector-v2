@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "promptforge"
-version = "1.1.0"
-description = "Generator de prompturi detaliate (300-500 de cuvinte) pentru modele de text și de imagine, cu analiză de poze și linkuri"
+version = "1.2.0"
+description = "Generator de prompturi detaliate (300-3000 de cuvinte) pentru text, imagine și video, cu analiză de poze și linkuri"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

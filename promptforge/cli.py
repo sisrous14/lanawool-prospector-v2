@@ -7,10 +7,19 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, generate_many
-from .models import Brief, DEFAULT_MAX_WORDS, DEFAULT_MIN_WORDS, GeneratedPrompt, MODE_IMAGE, MODE_TEXT
-from .targets import IMAGE_TARGETS, TEXT_TARGETS
-from .vocab import IMAGE_DOMAINS, TEXT_DOMAINS, TONES
+from . import __version__, feedback, generate_many, presets
+from .catalog import MODELS, PLATFORMS, PRICING_DISCLAIMER, SIZES, parse_size
+from .models import (
+    Brief,
+    DEFAULT_MAX_WORDS,
+    DEFAULT_MIN_WORDS,
+    GeneratedPrompt,
+    MODE_IMAGE,
+    MODE_TEXT,
+    MODE_VIDEO,
+)
+from .targets import IMAGE_TARGETS, TEXT_TARGETS, VIDEO_TARGETS
+from .vocab import IMAGE_DOMAINS, TEXT_DOMAINS, TONES, VIDEO_DOMAINS
 from . import history as history_store
 
 RULE = "─" * 72
@@ -35,8 +44,20 @@ def _add_common(parser: argparse.ArgumentParser, mode: str) -> None:
     parser.add_argument("--out", type=Path, help="scrie rezultatul într-un fișier")
     parser.add_argument("--json", action="store_true", dest="as_json", help="ieșire JSON")
     parser.add_argument("--no-save", action="store_true", help="nu salva în istoric")
+    parser.add_argument("--preset", help="profil salvat cu `promptforge preset salveaza`")
+    parser.add_argument("--platform", choices=sorted(PLATFORMS),
+                        help="rețeaua sau produsul pentru care e conținutul")
+    parser.add_argument("--size", help="dimensiune în pixeli („1080x1920”) sau nume "
+                                       f"({', '.join(sorted(SIZES))})")
 
-    if mode == MODE_TEXT:
+    if mode == MODE_VIDEO:
+        parser.add_argument("--duration", type=int, default=0,
+                            help="durata clipului în secunde (implicit 8)")
+        parser.add_argument("--style", help="aspect vizual impus")
+        parser.add_argument("--aspect", help="raport de aspect")
+        parser.add_argument("--subject", help="subiectul formulat în engleză")
+        parser.add_argument("--lang", default=None, choices=["ro", "en"])
+    elif mode == MODE_TEXT:
         parser.add_argument("--audience", help="pentru cine este textul")
         parser.add_argument("--tone", help=f"ton ({', '.join(sorted(TONES))}) sau o descriere liberă")
         parser.add_argument("--lang", default="ro", choices=["ro", "en"],
@@ -50,23 +71,50 @@ def _add_common(parser: argparse.ArgumentParser, mode: str) -> None:
 
 
 def _brief_from_args(args: argparse.Namespace, mode: str) -> Brief:
-    return Brief(
-        idea=" ".join(args.idea),
-        mode=mode,
-        domain=args.domain,
-        target=args.target,
-        audience=getattr(args, "audience", None),
-        tone=getattr(args, "tone", None),
-        style=getattr(args, "style", None),
-        aspect=getattr(args, "aspect", None),
-        subject=getattr(args, "subject", None),
-        must=args.must,
-        avoid=args.avoid,
-        lang=getattr(args, "lang", None),
-        seed=args.seed,
-        min_words=args.min_words,
-        max_words=args.max_words,
-    )
+    options: dict = {
+        "domain": args.domain,
+        "target": args.target,
+        "audience": getattr(args, "audience", None),
+        "tone": getattr(args, "tone", None),
+        "style": getattr(args, "style", None),
+        "aspect": getattr(args, "aspect", None),
+        "platform": args.platform,
+        "must": args.must,
+        "avoid": args.avoid,
+        "lang": getattr(args, "lang", None),
+        "seed": args.seed,
+        "duration": getattr(args, "duration", 0),
+    }
+    # Limitele de cuvinte se trimit doar dacă au fost schimbate, ca profilul să
+    # poată fixa altele fără să fie suprascris de valorile implicite.
+    if args.min_words != DEFAULT_MIN_WORDS:
+        options["min_words"] = args.min_words
+    if args.max_words != DEFAULT_MAX_WORDS:
+        options["max_words"] = args.max_words
+
+    if args.size:
+        width, height = parse_size(args.size)
+        options["width"], options["height"] = width, height
+
+    if args.preset:
+        options = presets.apply(args.preset, options)
+
+    options.setdefault("min_words", DEFAULT_MIN_WORDS)
+    options.setdefault("max_words", DEFAULT_MAX_WORDS)
+    options.pop("mode", None)
+
+    subject = getattr(args, "subject", None)
+    idea = " ".join(args.idea)
+
+    # O corecție dată cu --subject e o traducere pe care merită să o reținem.
+    if subject and mode in (MODE_IMAGE, MODE_VIDEO):
+        from .image_engine import looks_romanian
+        from .translate import learn
+
+        if looks_romanian(idea):
+            learn(idea, subject)
+
+    return Brief(idea=idea, mode=mode, subject=subject, **options)
 
 
 def _render_result(result: GeneratedPrompt, total: int) -> str:
@@ -314,9 +362,16 @@ def _cmd_lists(_: argparse.Namespace) -> int:
     print("\nȚINTE TEXT:")
     for name, spec in sorted(TEXT_TARGETS.items()):
         print(f"  {name:<12} {spec['label']}")
+    print("\nDOMENII VIDEO:")
+    print("  " + ", ".join(sorted(VIDEO_DOMAINS)))
     print("\nȚINTE IMAGINE:")
     for name, spec in sorted(IMAGE_TARGETS.items()):
         print(f"  {name:<12} {spec['label']}")
+    print("\nȚINTE VIDEO:")
+    for name, spec in sorted(VIDEO_TARGETS.items()):
+        print(f"  {name:<12} {spec['label']}")
+    print("\nPLATFORME:")
+    print("  " + ", ".join(sorted(PLATFORMS)))
     print("\nTONURI:")
     print("  " + ", ".join(sorted(TONES)))
     return 0
@@ -326,6 +381,157 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     from .web import serve
 
     serve(host=args.host, port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
+def _cmd_models(args: argparse.Namespace) -> int:
+    """Modelele-țintă disponibile, cu eticheta de preț."""
+    kinds = [args.kind] if args.kind else ["text", "image", "video"]
+    titles = {"text": "TEXT", "image": "IMAGINE", "video": "VIDEO"}
+
+    for kind in kinds:
+        print(f"\n{titles[kind]}")
+        print("─" * 72)
+        for model in [m for m in MODELS.values() if m.kind == kind]:
+            print(f"  {model.key:<16} {model.label:<28} [{model.pricing}]")
+            print(f"  {'':<16} {model.pricing_note}")
+            if model.note:
+                print(f"  {'':<16} {model.note}")
+            print()
+    print(PRICING_DISCLAIMER)
+    return 0
+
+
+def _cmd_preset(args: argparse.Namespace) -> int:
+    if args.action == "lista":
+        saved = presets.all_presets()
+        if not saved:
+            print("Niciun profil salvat.")
+            return 0
+        for name, options in sorted(saved.items()):
+            details = ", ".join(f"{k}={v}" for k, v in sorted(options.items()))
+            print(f"{name}\n  {details}")
+        return 0
+
+    if not args.name:
+        print("Comanda are nevoie de un nume de profil.", file=sys.stderr)
+        return 2
+
+    try:
+        if args.action == "sterge":
+            presets.delete(args.name)
+            print(f"Profilul {args.name!r} a fost șters.")
+            return 0
+
+        options = {}
+        for pair in args.set or []:
+            if "=" not in pair:
+                print(f"Aștept perechi cheie=valoare, am primit {pair!r}.", file=sys.stderr)
+                return 2
+            key, _, value = pair.partition("=")
+            key = key.strip()
+            if key in ("must", "avoid"):
+                options.setdefault(key, []).append(value.strip())
+            elif key in ("min_words", "max_words", "width", "height", "duration", "seed"):
+                options[key] = int(value)
+            else:
+                options[key] = value.strip()
+        saved = presets.save(args.name, options)
+        print(f"Profilul {args.name!r} salvat: " + ", ".join(f"{k}={v}" for k, v in saved.items()))
+        return 0
+    except (presets.PresetError, ValueError) as exc:
+        print(f"Eroare: {exc}", file=sys.stderr)
+        return 2
+
+
+def _cmd_feedback(args: argparse.Namespace, good: bool) -> int:
+    """Notează ultimul prompt (sau unul din istoric) ca bun sau slab."""
+    entries = history_store.load(limit=max(args.index, 1))
+    if not entries:
+        print("Istoricul e gol; nu am ce nota.", file=sys.stderr)
+        return 2
+    if args.index > len(entries):
+        print(f"Am doar {len(entries)} intrări în istoric.", file=sys.stderr)
+        return 2
+
+    entry = entries[args.index - 1]
+    descriptors = entry.get("used_descriptors") or []
+    if not descriptors:
+        print(
+            "Intrarea aceea nu are descriptori salvați (a fost generată cu o "
+            "versiune mai veche sau rafinată cu model).",
+            file=sys.stderr,
+        )
+        return 2
+
+    feedback.record(descriptors, good=good)
+    verdict = "bun" if good else "slab"
+    print(f"Notat ca {verdict}: {len(descriptors)} descriptori din „{entry['idea'][:60]}”.")
+    return 0
+
+
+def _cmd_preferences(args: argparse.Namespace) -> int:
+    if args.reset:
+        feedback.reset()
+        print("Preferințele au fost șterse.")
+        return 0
+    rows = feedback.summary(limit=args.limit)
+    if not rows:
+        print("Nicio preferință încă. Folosește `promptforge bun` după un rezultat reușit.")
+        return 0
+    for descriptor, score in rows:
+        mark = "+" if score > 0 else "−"
+        print(f"{mark}{abs(score):<3} {descriptor[:90]}")
+    return 0
+
+
+def _cmd_audit(args: argparse.Namespace) -> int:
+    from .audit import audit as run_audit
+
+    text = args.file.read_text(encoding="utf-8") if args.file else " ".join(args.prompt)
+    try:
+        result = run_audit(text, mode=args.mode)
+    except ValueError as exc:
+        print(f"Eroare: {exc}", file=sys.stderr)
+        return 2
+
+    print(RULE)
+    print(f"AUDIT   {result.score}/100 — {result.verdict}   ({result.word_count} cuvinte)")
+    print(RULE)
+    if result.present:
+        print("\nARE:")
+        for label in result.present:
+            print(f"  ✓ {label}")
+    if result.missing:
+        print("\nLIPSEȘTE:")
+        for label, hint in result.missing:
+            print(f"  ✗ {label}\n      {hint}")
+    for note in result.notes:
+        print(f"\n  • {note}")
+    return 0
+
+
+def _cmd_lexicon(args: argparse.Namespace) -> int:
+    from .translate import forget, learn, learned
+
+    if args.uita:
+        print("Șters." if forget(args.uita) else "Nu aveam intrarea asta.")
+        return 0
+    if args.adauga:
+        if "=" not in args.adauga:
+            print("Aștept forma „română=engleză”.", file=sys.stderr)
+            return 2
+        romanian, _, english = args.adauga.partition("=")
+        learn(romanian, english)
+        print(f"Reținut: „{romanian.strip()}” → „{english.strip()}”.")
+        return 0
+
+    entries = learned()
+    if not entries:
+        print("Lexiconul învățat e gol. Se umple singur când corectezi cu --subject.")
+        return 0
+    for romanian, english in sorted(entries.items()):
+        print(f"{romanian}  →  {english}")
     return 0
 
 
@@ -344,6 +550,47 @@ def build_parser() -> argparse.ArgumentParser:
     image_parser = sub.add_parser("image", help="prompt pentru un model de imagine")
     _add_common(image_parser, MODE_IMAGE)
     image_parser.set_defaults(func=lambda a: _run_generation(a, MODE_IMAGE))
+
+    video_parser = sub.add_parser("video", help="prompt pentru un model video")
+    _add_common(video_parser, MODE_VIDEO)
+    video_parser.set_defaults(func=lambda a: _run_generation(a, MODE_VIDEO))
+
+    models_parser = sub.add_parser("modele", help="modelele disponibile și dacă sunt gratis")
+    models_parser.add_argument("--kind", choices=["text", "image", "video"])
+    models_parser.set_defaults(func=_cmd_models)
+
+    preset_parser = sub.add_parser("preset", help="profiluri de opțiuni salvate")
+    preset_parser.add_argument("action", choices=["lista", "salveaza", "sterge"])
+    preset_parser.add_argument("name", nargs="?")
+    preset_parser.add_argument("--set", action="append", metavar="CHEIE=VALOARE",
+                               help="opțiune de salvat (se poate repeta)")
+    preset_parser.set_defaults(func=_cmd_preset)
+
+    good_parser = sub.add_parser("bun", help="marchează ultimul prompt ca reușit")
+    good_parser.add_argument("--index", type=int, default=1,
+                             help="al câtelea din istoric (1 = ultimul)")
+    good_parser.set_defaults(func=lambda a: _cmd_feedback(a, good=True))
+
+    bad_parser = sub.add_parser("slab", help="marchează ultimul prompt ca nereușit")
+    bad_parser.add_argument("--index", type=int, default=1)
+    bad_parser.set_defaults(func=lambda a: _cmd_feedback(a, good=False))
+
+    prefs_parser = sub.add_parser("preferinte", help="ce a învățat din feedback-ul tău")
+    prefs_parser.add_argument("--limit", type=int, default=20)
+    prefs_parser.add_argument("--reset", action="store_true")
+    prefs_parser.set_defaults(func=_cmd_preferences)
+
+    audit_parser = sub.add_parser("audit", help="verifică un prompt existent")
+    audit_parser.add_argument("prompt", nargs="*", help="promptul de verificat")
+    audit_parser.add_argument("--file", type=Path, help="citește promptul dintr-un fișier")
+    audit_parser.add_argument("--mode", default=MODE_TEXT,
+                              choices=[MODE_TEXT, MODE_IMAGE, MODE_VIDEO])
+    audit_parser.set_defaults(func=_cmd_audit)
+
+    lexicon_parser = sub.add_parser("lexicon", help="traducerile pe care le-a învățat")
+    lexicon_parser.add_argument("--adauga", metavar="RO=EN")
+    lexicon_parser.add_argument("--uita", metavar="RO")
+    lexicon_parser.set_defaults(func=_cmd_lexicon)
 
     vision_parser = sub.add_parser(
         "vision", help="prompt pornind de la poze sau linkuri")

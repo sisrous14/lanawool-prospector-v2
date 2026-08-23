@@ -30,6 +30,7 @@ def save(brief: Brief, result: GeneratedPrompt, path: Path | None = None) -> Pat
         "variant": result.variant,
         "word_count": result.word_count,
         "refined_by": result.refined_by,
+        "used_descriptors": result.used_descriptors,
         "prompt": result.full_text(),
     }
     with target.open("a", encoding="utf-8") as handle:

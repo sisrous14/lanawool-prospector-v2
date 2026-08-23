@@ -4,23 +4,36 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
-from promptforge import Brief, generate, generate_many
+from promptforge import Brief, feedback, generate, generate_many, presets
 from promptforge.assembly import count_words, fit, range_note, sentence
 from promptforge.cli import main
 from promptforge.detect import detect_domain, keywords_of
 from promptforge.history import load, save
 from promptforge.image_engine import looks_romanian
-from promptforge.media import ImageRef, MediaError, load_image
+from promptforge.audit import audit as run_audit
+from promptforge.catalog import (
+    FREE,
+    FREEMIUM,
+    MODELS,
+    PAID,
+    PLATFORMS,
+    aspect_of,
+    parse_size,
+)
+from promptforge.media import ImageRef, MediaError, load_image, read_dimensions
 from promptforge.models import Section
 from promptforge.pipeline import from_sources
-from promptforge.translate import to_english
+from promptforge.translate import forget, learn, learned, to_english
 from promptforge.vision import VisionError, analyze_images
 from promptforge.web import _decode_uploads
-from promptforge.targets import IMAGE_TARGETS, TEXT_TARGETS
+from promptforge.targets import IMAGE_TARGETS, TEXT_TARGETS, VIDEO_TARGETS
 from promptforge.vocab import IMAGE_DOMAINS, TEXT_DOMAINS
 
 
@@ -31,7 +44,10 @@ class TestBrief(unittest.TestCase):
 
     def test_refuza_mod_necunoscut(self):
         with self.assertRaises(ValueError):
-            Brief(idea="ceva", mode="video")
+            Brief(idea="ceva", mode="audio")
+
+    def test_accepta_modul_video(self):
+        self.assertEqual(Brief(idea="ceva", mode="video").lang, "en")
 
     def test_refuza_limite_inversate(self):
         with self.assertRaises(ValueError):
@@ -592,3 +608,409 @@ class TestIncarcareWeb(unittest.TestCase):
     def test_refuza_format_stricat(self):
         with self.assertRaises(MediaError):
             _decode_uploads([{"name": "x", "data_url": "nu-i data url"}])
+
+
+# ---------------------------------------------------------------------------
+# Catalog, platforme, dimensiuni
+# ---------------------------------------------------------------------------
+
+class TestCatalog(unittest.TestCase):
+    def test_fiecare_model_are_eticheta_de_pret(self):
+        for key, model in MODELS.items():
+            with self.subTest(model=key):
+                self.assertIn(model.pricing, (FREE, FREEMIUM, PAID))
+                self.assertTrue(model.pricing_note.strip())
+
+    def test_fiecare_tinta_are_un_model_in_catalog(self):
+        # Fără asta, interfața ar arăta o țintă fără etichetă de preț.
+        for keys, kind in [(TEXT_TARGETS, "text"), (IMAGE_TARGETS, "image"),
+                           (VIDEO_TARGETS, "video")]:
+            for key in keys:
+                with self.subTest(target=key, kind=kind):
+                    self.assertTrue(
+                        key in MODELS or f"{key}-{kind}" in MODELS,
+                        f"{key} nu are intrare în catalog",
+                    )
+
+    def test_parseaza_dimensiuni(self):
+        self.assertEqual(parse_size("1080x1920"), (1080, 1920))
+        self.assertEqual(parse_size("FullHD"), (1920, 1080))
+        self.assertEqual(parse_size("tiktok"), (1080, 1920))
+        self.assertEqual(parse_size("reel"), (1080, 1920))
+
+    def test_dimensiune_invalida(self):
+        for value in ("mare", "0x100", "abcxdef", "1080"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_size(value)
+
+    def test_raport_de_aspect(self):
+        cases = {
+            (1920, 1080): "16:9", (1080, 1350): "4:5", (1080, 1920): "9:16",
+            (1200, 628): "1.91:1", (1000, 1000): "1:1", (3000, 2000): "3:2",
+        }
+        for (width, height), expected in cases.items():
+            with self.subTest(size=(width, height)):
+                self.assertEqual(aspect_of(width, height), expected)
+
+    def test_aspect_refuza_valori_nule(self):
+        with self.assertRaises(ValueError):
+            aspect_of(0, 100)
+
+    def test_platformele_au_reguli_in_ambele_limbi(self):
+        for key, platform in PLATFORMS.items():
+            for mode in ("text", "image", "video"):
+                rules = platform.rules.get(mode, {})
+                for lang in ("ro", "en"):
+                    with self.subTest(platform=key, mode=mode, lang=lang):
+                        self.assertTrue(rules.get(lang), f"{key}/{mode}/{lang} lipsește")
+
+
+class TestDimensiuniImagine(unittest.TestCase):
+    """Citirea dimensiunilor din antet, fără nicio dependență externă."""
+
+    @staticmethod
+    def _png(width, height):
+        def chunk(tag, data):
+            payload = tag + data
+            return struct.pack(">I", len(data)) + payload + struct.pack(">I", zlib.crc32(payload))
+        header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IEND", b"")
+
+    @staticmethod
+    def _jpeg(width, height):
+        sof = (b"\xff\xc0" + struct.pack(">H", 17) + b"\x08"
+               + struct.pack(">HH", height, width)
+               + b"\x03\x01\x11\x00\x02\x11\x01\x03\x11\x01")
+        return b"\xff\xd8" + sof + b"\xff\xd9"
+
+    def test_png(self):
+        self.assertEqual(read_dimensions(self._png(1920, 1080)), (1920, 1080))
+
+    def test_jpeg(self):
+        self.assertEqual(read_dimensions(self._jpeg(1080, 1350)), (1080, 1350))
+
+    def test_gif(self):
+        raw = b"GIF89a" + struct.pack("<HH", 640, 480) + b"\x00\x00\x00"
+        self.assertEqual(read_dimensions(raw), (640, 480))
+
+    def test_webp(self):
+        body = (b"VP8X" + struct.pack("<I", 10) + b"\x00\x00\x00\x00"
+                + (1199).to_bytes(3, "little") + (627).to_bytes(3, "little"))
+        raw = b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WEBP" + body
+        self.assertEqual(read_dimensions(raw), (1200, 628))
+
+    def test_format_necunoscut_nu_arunca(self):
+        self.assertEqual(read_dimensions(b"nu e o imagine"), (0, 0))
+
+    def test_dimensiunea_ajunge_pe_imagine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.png"
+            path.write_bytes(self._png(1080, 1920))
+            ref = load_image(str(path))
+            self.assertEqual((ref.width, ref.height), (1080, 1920))
+            self.assertIn("9:16", ref.size_note())
+
+
+class TestPlatformeSiDimensiuni(unittest.TestCase):
+    def test_platforma_da_aspectul(self):
+        result = generate(Brief(idea="a product shot", mode="image", platform="tiktok"))
+        self.assertIn("9:16", result.parameters)
+
+    def test_dimensiunea_bate_platforma(self):
+        result = generate(Brief(
+            idea="a product shot", mode="image", platform="tiktok",
+            width=1080, height=1080,
+        ))
+        self.assertIn("1:1", result.parameters)
+
+    def test_aspectul_explicit_bate_tot(self):
+        result = generate(Brief(
+            idea="a product shot", mode="image", platform="tiktok",
+            width=1080, height=1080, aspect="21:9",
+        ))
+        self.assertIn("21:9", result.parameters)
+
+    def test_regulile_platformei_ajung_in_prompt(self):
+        result = generate(Brief(idea="anunt pentru produs", mode="text", platform="google"))
+        self.assertIn("30 de caractere", result.prompt)
+
+    def test_regulile_sunt_in_limba_promptului(self):
+        english = generate(Brief(idea="a product shot", mode="image", platform="tiktok"))
+        self.assertIn("covered by the interface", english.prompt)
+        self.assertNotIn("acoperită de interfață", english.prompt)
+        romanian = generate(Brief(idea="a product shot", mode="image",
+                                  platform="tiktok", lang="ro"))
+        self.assertIn("acoperită de interfață", romanian.prompt)
+
+    def test_dimensiunea_apare_in_prompt(self):
+        result = generate(Brief(idea="a poster", mode="image", width=2480, height=3508))
+        self.assertIn("2480×3508", result.prompt)
+
+    def test_platforma_necunoscuta(self):
+        with self.assertRaises(ValueError):
+            Brief(idea="ceva", platform="myspace")
+
+    def test_dimensiune_incompleta(self):
+        with self.assertRaises(ValueError):
+            Brief(idea="ceva", width=1080)
+
+
+class TestPrompturiLungi(unittest.TestCase):
+    def test_intervale_mari_sunt_respectate(self):
+        for mode in ("text", "image", "video"):
+            for lo, hi in [(300, 500), (800, 1000), (1500, 1800)]:
+                with self.subTest(mode=mode, interval=(lo, hi)):
+                    result = generate(Brief(
+                        idea="an old fisherman mending nets on a stone pier",
+                        mode=mode, min_words=lo, max_words=hi,
+                    ))
+                    self.assertGreaterEqual(result.word_count, lo)
+                    self.assertLessEqual(result.word_count, hi)
+
+    def test_limita_superioara(self):
+        with self.assertRaises(ValueError):
+            Brief(idea="ceva", min_words=100, max_words=5000)
+
+    def test_semnaleaza_cand_materialul_se_termina(self):
+        result = generate(Brief(idea="ceva", mode="image", min_words=2990, max_words=3000))
+        self.assertTrue(any("epuizat" in note for note in result.notes))
+
+    def test_avertisment_pentru_prompt_lung(self):
+        result = generate(Brief(idea="ceva", mode="text", min_words=1300, max_words=1600))
+        self.assertTrue(any("Prompt lung" in note for note in result.notes))
+
+    def test_extensiile_apar_doar_la_buget_mare(self):
+        scurt = generate(Brief(idea="a portrait", mode="image", seed=3))
+        lung = generate(Brief(idea="a portrait", mode="image", seed=3,
+                              min_words=1200, max_words=1500))
+        self.assertGreater(lung.word_count, scurt.word_count * 2)
+
+
+class TestVideo(unittest.TestCase):
+    def test_toate_tintele(self):
+        for target in VIDEO_TARGETS:
+            with self.subTest(target=target):
+                result = generate(Brief(idea="a coffee ad", mode="video", target=target))
+                self.assertEqual(result.mode, "video")
+                self.assertGreaterEqual(result.word_count, 300)
+                self.assertLessEqual(result.word_count, 500)
+
+    def test_domeniile_video_sunt_detectate(self):
+        cases = {
+            "un clip scurt pentru tiktok": "social",
+            "o reclama de 15 secunde": "reclama",
+            "o scena cinematica cu ploaie": "cinematic",
+            "un tutorial video pas cu pas": "tutorial",
+        }
+        for idea, expected in cases.items():
+            with self.subTest(idea=idea):
+                self.assertEqual(detect_domain(idea, "video"), expected)
+
+    def test_durata_ajunge_in_prompt_si_parametri(self):
+        result = generate(Brief(idea="a coffee ad", mode="video", duration=12))
+        self.assertIn("12 seconds", result.prompt)
+        self.assertIn("Duration: 12s", result.parameters)
+
+    def test_sora_nu_are_prompt_negativ(self):
+        result = generate(Brief(idea="a coffee ad", mode="video", target="sora"))
+        self.assertEqual(result.negative_prompt, "")
+        self.assertIn("Stated positively", result.prompt)
+
+    def test_kling_are_prompt_negativ(self):
+        result = generate(Brief(idea="a coffee ad", mode="video", target="kling"))
+        self.assertIn("morphing faces", result.negative_prompt)
+
+    def test_modul_prose_nu_lipeste_propozitiile(self):
+        result = generate(Brief(idea="a coffee ad", mode="video", target="sora",
+                                platform="tiktok"))
+        self.assertNotIn("suggestions:.", result.prompt)
+        self.assertNotIn("\n\n", result.prompt)
+
+
+class TestProfiluri(unittest.TestCase):
+    def setUp(self):
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        self._tmp = tempfile.mkdtemp()
+        os.environ["PROMPTFORGE_HOME"] = self._tmp
+
+    def tearDown(self):
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def test_salveaza_si_citeste(self):
+        presets.save("al-meu", {"target": "flux", "aspect": "1:1"})
+        self.assertEqual(presets.get("al-meu"), {"target": "flux", "aspect": "1:1"})
+
+    def test_optiunile_din_linie_bat_profilul(self):
+        presets.save("al-meu", {"target": "flux", "aspect": "1:1"})
+        merged = presets.apply("al-meu", {"aspect": "16:9"})
+        self.assertEqual(merged["aspect"], "16:9")
+        self.assertEqual(merged["target"], "flux")
+
+    def test_listele_se_aduna(self):
+        presets.save("al-meu", {"avoid": ["neon"]})
+        merged = presets.apply("al-meu", {"avoid": ["blur"]})
+        self.assertEqual(merged["avoid"], ["neon", "blur"])
+
+    def test_profil_inexistent(self):
+        with self.assertRaises(presets.PresetError):
+            presets.get("nu-exista")
+
+    def test_camp_nepermis(self):
+        with self.assertRaises(presets.PresetError):
+            presets.save("x", {"idea": "nu are ce cauta aici"})
+
+    def test_stergere(self):
+        presets.save("temporar", {"target": "flux"})
+        presets.delete("temporar")
+        self.assertNotIn("temporar", presets.all_presets())
+
+
+class TestFeedback(unittest.TestCase):
+    def setUp(self):
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        os.environ["PROMPTFORGE_HOME"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def test_rezultatul_retine_descriptorii(self):
+        result = generate(Brief(idea="a portrait", mode="image"))
+        self.assertTrue(result.used_descriptors)
+
+    def test_preferatele_sunt_reutilizate(self):
+        first = generate(Brief(idea="a portrait", mode="image", seed=1))
+        feedback.record(first.used_descriptors, good=True)
+        second = generate(Brief(idea="another portrait", mode="image", seed=77))
+        self.assertTrue(set(first.used_descriptors) & set(second.used_descriptors))
+
+    def test_cele_slabe_sunt_ocolite(self):
+        first = generate(Brief(idea="a portrait", mode="image", seed=1))
+        feedback.record(first.used_descriptors, good=False)
+        second = generate(Brief(idea="a portrait", mode="image", seed=1))
+        self.assertLess(
+            len(set(first.used_descriptors) & set(second.used_descriptors)),
+            len(first.used_descriptors),
+        )
+
+    def test_lista_neagra_completa_nu_blocheaza(self):
+        # Chiar dacă toate opțiunile sunt marcate slab, generarea trebuie să meargă.
+        first = generate(Brief(idea="a portrait", mode="image"))
+        for _ in range(5):
+            feedback.record(first.used_descriptors, good=False)
+        self.assertGreaterEqual(generate(Brief(idea="a portrait", mode="image")).word_count, 300)
+
+    def test_reset(self):
+        feedback.record(["ceva"], good=True)
+        feedback.reset()
+        self.assertEqual(feedback.preferences(), (set(), set()))
+
+
+class TestLexiconInvatat(unittest.TestCase):
+    def setUp(self):
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        os.environ["PROMPTFORGE_HOME"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def test_invata_o_fraza_intreaga(self):
+        original = "un dispozitiv ciudat cu manete"
+        self.assertEqual(to_english(original)[0], original)
+        learn(original, "a strange machine with levers")
+        self.assertEqual(to_english(original)[0], "a strange machine with levers")
+
+    def test_invata_un_fragment(self):
+        learn("dispozitiv", "machine")
+        self.assertIn("machine", to_english("un dispozitiv vechi")[0])
+
+    def test_uita(self):
+        learn("manete", "levers")
+        self.assertTrue(forget("manete"))
+        self.assertFalse(forget("manete"))
+
+    def test_nu_retine_o_traducere_goala(self):
+        learn("ceva", "   ")
+        self.assertEqual(learned(), {})
+
+
+class TestAudit(unittest.TestCase):
+    def test_prompt_slab_primeste_scor_mic(self):
+        result = run_audit("Deseneaza o pisica.", mode="image")
+        self.assertLess(result.score, 40)
+        self.assertEqual(result.verdict, "incomplet")
+        self.assertTrue(result.missing)
+
+    def test_promptul_nostru_trece(self):
+        for mode in ("text", "image"):
+            with self.subTest(mode=mode):
+                generated = generate(Brief(idea="an old fisherman on a pier", mode=mode))
+                self.assertGreaterEqual(run_audit(generated.full_text(), mode=mode).score, 80)
+
+    def test_semnaleaza_promptul_prea_scurt(self):
+        result = run_audit("fa ceva", mode="text")
+        self.assertTrue(any("cuvinte" in note for note in result.notes))
+
+    def test_refuza_promptul_gol(self):
+        with self.assertRaises(ValueError):
+            run_audit("   ")
+
+
+class TestCLIExtins(unittest.TestCase):
+    def setUp(self):
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        os.environ["PROMPTFORGE_HOME"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def test_comanda_modele(self):
+        self.assertEqual(main(["modele"]), 0)
+        self.assertEqual(main(["modele", "--kind", "video"]), 0)
+
+    def test_ciclu_complet_de_profil(self):
+        self.assertEqual(main(["preset", "salveaza", "p", "--set", "target=flux"]), 0)
+        self.assertEqual(main(["preset", "lista"]), 0)
+        self.assertEqual(main(["image", "o cana", "--preset", "p", "--no-save"]), 0)
+        self.assertEqual(main(["preset", "sterge", "p"]), 0)
+
+    def test_profil_cu_camp_gresit(self):
+        self.assertEqual(main(["preset", "salveaza", "p", "--set", "fara-egal"]), 2)
+
+    def test_comanda_video(self):
+        self.assertEqual(main(["video", "o reclama la cafea", "--duration", "10", "--no-save"]), 0)
+
+    def test_comanda_audit(self):
+        self.assertEqual(main(["audit", "Deseneaza o pisica", "--mode", "image"]), 0)
+
+    def test_lexicon_prin_cli(self):
+        self.assertEqual(main(["lexicon", "--adauga", "manete=levers"]), 0)
+        self.assertEqual(main(["lexicon"]), 0)
+        self.assertEqual(main(["lexicon", "--adauga", "fara-egal"]), 2)
+
+    def test_feedback_din_istoric(self):
+        self.assertEqual(main(["image", "o cana de cafea"]), 0)
+        self.assertEqual(main(["bun"]), 0)
+        self.assertEqual(main(["preferinte"]), 0)
+
+    def test_feedback_fara_istoric(self):
+        self.assertEqual(main(["bun"]), 2)
+
+    def test_dimensiune_invalida_in_cli(self):
+        # Eroarea e prinsă și raportată, nu propagată ca excepție.
+        self.assertEqual(main(["image", "ceva", "--size", "gresit", "--no-save"]), 2)
+
+    def test_subiectul_dat_manual_este_invatat(self):
+        main(["image", "un pescar batran", "--subject", "an old fisherman", "--no-save"])
+        self.assertIn("un pescar batran", learned())

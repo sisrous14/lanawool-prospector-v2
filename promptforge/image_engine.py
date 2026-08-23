@@ -15,10 +15,13 @@ from __future__ import annotations
 import re
 
 from .assembly import count_words, fit, range_note, render_section, sentence
+from .catalog import PLATFORMS, aspect_of, describe_size
+from .depth import image_depth, platform_section
+from . import feedback
 from .detect import Picker, detect_domain
 from .models import Brief, GeneratedPrompt, MODE_IMAGE, Section
 from .targets import IMAGE_TARGETS, default_image_target
-from .translate import IMAGE_LABELS, IMAGE_PHRASES, to_english
+from .translate import IMAGE_LABELS, IMAGE_PHRASES, lookup_romanian, to_english
 from .vocab import ASPECT_BY_DOMAIN, COMMON_IMAGE, IMAGE_DOMAINS, normalize
 
 # Cuvinte româneşti frecvente, pentru a semnala că subiectul nu e în engleză.
@@ -82,11 +85,24 @@ EN_PHRASES: dict[str, str] = {
 
 
 def looks_romanian(text: str) -> bool:
-    """Euristică simplă: diacritice sau cuvinte de legătură româneşti."""
+    """Decide dacă textul e în română.
+
+    Trei semnale, în ordinea siguranței: diacriticele, cuvintele de legătură
+    româneşti, și cât din text recunoaște lexiconul vizual. Al treilea prinde
+    fraze scurte ca „un pescar batran”, unde primele două nu sunt de ajuns.
+    """
     if re.search(r"[ăâîșşțţ]", text, flags=re.IGNORECASE):
         return True
-    words = set(normalize(text).split())
-    return len(words & _RO_MARKERS) >= 2
+
+    words = normalize(text).split()
+    if len(set(words) & _RO_MARKERS) >= 2:
+        return True
+
+    content = [word for word in words if len(word) > 2]
+    if len(content) < 2:
+        return False
+    known = sum(1 for word in content if lookup_romanian(word) is not None)
+    return known >= 2 and known / len(content) >= 0.5
 
 
 def _phrases(lang: str) -> dict[str, str]:
@@ -138,6 +154,16 @@ def _pick(brief: Brief, key: str, options: list[str], picker: Picker) -> str:
     return picker.one(options)
 
 
+def _more(options: list[str], used: str, picker: Picker, count: int = 4) -> list[str]:
+    """Descriptori suplimentari din același vocabular, fără să-l repete pe cel folosit.
+
+    Servesc drept extensii: apar doar când bugetul de cuvinte e mare, și atunci
+    îmbogățesc blocul în loc să-l repete.
+    """
+    pool = [option for option in options if option != used]
+    return [sentence(option) for option in picker.some(pool, count)]
+
+
 def build_sections(
     brief: Brief, domain: str, picker: Picker
 ) -> tuple[list[Section], list[Section], list[str], list[str]]:
@@ -178,11 +204,13 @@ def build_sections(
             _label("SETTING", lang),
             [f"{sentence(p['setting_head'] + ' ' + environment)} {p['setting_tail']}"],
             priority=1,
+            expansions=_more(list(data["environment"]), environment, picker),  # type: ignore[arg-type]
         ),
         Section(
             _label("COMPOSITION", lang),
             [f"{sentence(composition)} {p['composition_tail']}"],
             priority=1,
+            expansions=_more(COMMON_IMAGE["composition"], composition, picker),
         ),
         Section(
             _label("CAMERA", lang),
@@ -193,22 +221,47 @@ def build_sections(
             _label("LIGHTING", lang),
             [f"{sentence(lighting)} {p['lighting_tail']}"],
             priority=1,
+            expansions=_more(list(data["lighting"]), lighting, picker),  # type: ignore[arg-type]
         ),
         Section(
             _label("COLOUR AND MOOD", lang),
             [f"{sentence(palette)} {p['mood_head']} {mood}, {p['mood_tail']}"],
             priority=2,
+            expansions=_more(COMMON_IMAGE["palette"], palette, picker),
         ),
-        Section(_label("STYLE", lang), [f"{sentence(style)} {p['style_tail']}"], priority=2),
+        Section(_label("STYLE", lang), [f"{sentence(style)} {p['style_tail']}"], priority=2,
+                expansions=_more(list(data["style"]), style, picker)),  # type: ignore[arg-type]
         Section(
             _label("DETAIL", lang),
             [" ".join(sentence(part) for part in ([detail] + extras[:1]))],
             priority=2,
             droppable=True,
+            expansions=_more(COMMON_IMAGE["detail"], detail, picker) + [
+                sentence(item) for item in extras[1:3]
+            ],
         ),
         Section(_label("TECHNICAL", lang), [sentence(quality)], priority=2,
                 droppable=True, min_lines=0),
     ]
+
+    if brief.platform:
+        rules = platform_section(brief.platform, "image", lang)
+        if rules is not None:
+            sections.append(rules)
+
+    if brief.width and brief.height:
+        sections.append(
+            Section(
+                _label("OUTPUT SPECIFICATION", lang),
+                [
+                    f"Final output at {describe_size(brief.width, brief.height)}. "
+                    f"Compose for this exact frame: the subject must sit correctly inside "
+                    f"{aspect_of(brief.width, brief.height)} without needing a crop, and fine "
+                    f"detail must hold at this pixel size rather than at a larger one."
+                ],
+                priority=1,
+            )
+        )
 
     if brief.must:
         sections.append(
@@ -234,12 +287,21 @@ def build_sections(
                 droppable=True, min_lines=0)
     )
 
+    reserve.extend(image_depth(lang))
     return sections, reserve, negatives, notes
 
 
 def _to_prose(sections: list[Section]) -> str:
-    """Transformă blocurile într-un paragraf continuu (Midjourney, DALL·E)."""
-    parts = [line.strip() for section in sections for line in section.lines]
+    """Transformă blocurile într-un paragraf continuu.
+
+    Fiecare rând devine o propoziție de sine stătătoare: fără etichete care să
+    le separe, un rând fără punct final s-ar lipi de următorul.
+    """
+    parts: list[str] = []
+    for section in sections:
+        if section.lead:
+            parts.append(sentence(section.lead))
+        parts.extend(sentence(line) for line in section.lines if line.strip())
     return re.sub(r"\s+", " ", " ".join(parts)).strip()
 
 
@@ -257,10 +319,21 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
         )
 
     spec = IMAGE_TARGETS[target]
-    picker = Picker(brief.seed + variant * 1000)
+    liked, disliked = feedback.preferences()
+    picker = Picker(brief.seed + variant * 1000, liked, disliked)
     sections, reserve, negatives, notes = build_sections(brief, domain, picker)
 
-    aspect = brief.aspect or brief.overrides.get("aspect") or ASPECT_BY_DOMAIN.get(domain, "16:9")
+    # Aspectul, în ordinea autorității: ce a cerut explicit utilizatorul, apoi
+    # dimensiunea în pixeli pe care a dat-o, apoi formatul platformei, apoi ce a
+    # observat analiza în poza-sursă, apoi obiceiul domeniului.
+    if brief.aspect:
+        aspect = brief.aspect
+    elif brief.width and brief.height:
+        aspect = aspect_of(brief.width, brief.height)
+    elif brief.platform and PLATFORMS[brief.platform].aspect:
+        aspect = PLATFORMS[brief.platform].aspect
+    else:
+        aspect = brief.overrides.get("aspect") or ASPECT_BY_DOMAIN.get(domain, "16:9")
 
     # Transferul între imagini descrie de unde vine fiecare element. Nu intră în
     # prompt: modelul-țintă primește doar text, iar „imaginea 1” nu înseamnă
@@ -312,6 +385,12 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
     warning = range_note(word_count, brief.min_words, brief.max_words)
     if warning:
         notes.insert(0, warning)
+    if word_count > 1200:
+        notes.append(
+            "Prompt lung. Peste circa 1000 de cuvinte, modelele urmăresc tot mai slab "
+            "instrucțiunile de la mijloc; câștigul scade, iar riscul de contradicții "
+            "crește. Folosește lungimea asta când chiar ai de spus atât."
+        )
 
     return GeneratedPrompt(
         prompt=prompt,
@@ -323,4 +402,5 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
         negative_prompt=negative_prompt,
         parameters=parameters,
         notes=notes,
+        used_descriptors=picker.chosen,
     )

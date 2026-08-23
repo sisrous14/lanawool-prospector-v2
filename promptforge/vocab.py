@@ -619,6 +619,70 @@ TEXT_DOMAINS: dict[str, dict[str, object]] = {
             "en": "Step-by-step flow, then screens with states, then the interface copy table.",
         },
     },
+    "descriere-imagini": {
+        "keywords": [
+            "descriere imagine", "descrierea imaginii", "alt text", "alt-text",
+            "text alternativ", "legenda", "caption", "subtitrare imagine",
+            "descrie poza", "descrie imaginea", "accesibilitate imagine",
+            "descriere foto", "descriere produs din poza", "image description",
+        ],
+        "role": {
+            "ro": "specialist în descrieri de imagini, care scrie deopotrivă pentru cititoare de ecran și pentru motoare de căutare",
+            "en": "image description specialist writing for screen readers and search engines alike",
+        },
+        "deliverable": {
+            "ro": "descriere de imagine în trei lungimi: text alternativ scurt, legendă și descriere completă",
+            "en": "an image description in three lengths: short alt text, a caption, and a full description",
+        },
+        "steps": {
+            "ro": [
+                "Începe cu ce este imaginea: fotografie, ilustrație, captură de ecran, diagramă. Cititorul nu o vede.",
+                "Descrie subiectul principal, apoi acțiunea, apoi contextul — în ordinea în care le-ar observa cineva care privește.",
+                "Textul alternativ are sub 125 de caractere și spune doar ce e necesar pentru a înțelege pagina.",
+                "Legenda adaugă ce nu se vede în imagine: cine, unde, când, de ce contează.",
+                "Descrierea completă include detaliile vizuale relevante, inclusiv orice text prezent în imagine, transcris exact.",
+                "Nu interpreta emoții sau intenții pe care imaginea nu le arată și nu presupune identitatea, vârsta sau etnia cuiva.",
+            ],
+            "en": [
+                "Start with what the image is: photograph, illustration, screenshot, diagram. The reader cannot see it.",
+                "Describe the main subject, then the action, then the context — in the order a viewer would notice them.",
+                "Alt text stays under 125 characters and says only what is needed to understand the page.",
+                "The caption adds what the image does not show: who, where, when, why it matters.",
+                "The full description covers the relevant visual detail, including any text in the image, transcribed exactly.",
+                "Do not interpret emotions or intentions the image does not show, and do not assume anyone's identity, age or ethnicity.",
+            ],
+        },
+        "quality": {
+            "ro": [
+                "cineva care nu vede imaginea își poate face o reprezentare corectă din descriere",
+                "textul alternativ nu începe cu „imagine cu” — cititorul de ecran anunță deja că e o imagine",
+                "orice text din imagine este transcris, nu rezumat",
+                "descrierea nu adaugă informație care nu se vede în cadru",
+            ],
+            "en": [
+                "someone who cannot see the image can form an accurate picture from the description",
+                "the alt text does not start with `image of` — the screen reader already announces it is an image",
+                "any text inside the image is transcribed, not summarised",
+                "the description adds no information that is not visible in the frame",
+            ],
+        },
+        "pitfalls": {
+            "ro": [
+                "descrieri care enumeră obiecte fără să spună ce se întâmplă",
+                "presupuneri despre cine sunt persoanele din imagine",
+                "text alternativ umplut cu cuvinte-cheie pentru căutare",
+            ],
+            "en": [
+                "descriptions that list objects without saying what is happening",
+                "assumptions about who the people in the image are",
+                "alt text stuffed with search keywords",
+            ],
+        },
+        "format": {
+            "ro": "Trei blocuri etichetate: TEXT ALTERNATIV (sub 125 de caractere), LEGENDĂ (una-două propoziții), DESCRIERE COMPLETĂ.",
+            "en": "Three labelled blocks: ALT TEXT (under 125 characters), CAPTION (one or two sentences), FULL DESCRIPTION.",
+        },
+    },
     "general": {
         "keywords": [],
         "role": {
@@ -689,6 +753,11 @@ COMMON_IMAGE: dict[str, list[str]] = {
         "tight frame-within-a-frame composition using foreground elements as a natural border",
         "layered depth with a defocused foreground element, sharp mid-ground subject and softly separated background",
         "diagonal composition with the subject on the descending line and generous headroom",
+        "low horizon with the subject occupying the upper two thirds against open sky or empty wall",
+        "tight two-shot spacing where the gap between elements carries as much weight as the elements",
+        "spiral arrangement drawing the eye inward through decreasing intervals toward the focal point",
+        "flat frontal composition with everything on one plane, graphic and deliberately depthless",
+        "off-balance framing with the subject pressed to one edge and the tension left unresolved",
     ],
     "palette": [
         "muted earth palette of warm ochre, clay brown and desaturated sage, with a single deep teal accent",
@@ -697,6 +766,11 @@ COMMON_IMAGE: dict[str, list[str]] = {
         "soft pastel palette of blush, bone white and pale eucalyptus, low saturation throughout",
         "rich jewel palette of emerald, oxblood and antique gold with deep shadow density",
         "near-monochrome cream and ivory palette with texture carrying the visual interest",
+        "split-tone palette of cool cyan shadows against warm sand highlights, mid-tones left neutral",
+        "restrained palette of forest green, charcoal and bone, with weathered brass as the only warm note",
+        "washed coastal palette of pale grey-blue, salt white and driftwood, low contrast throughout",
+        "high-key palette built almost entirely of light values, with a single dark anchor for structure",
+        "warm terracotta and dusty rose against deep shadow, saturated but never fluorescent",
     ],
     "mood": [
         "quiet, contemplative, unhurried",
@@ -705,12 +779,20 @@ COMMON_IMAGE: dict[str, list[str]] = {
         "clean, precise and confident",
         "nostalgic and slightly melancholic",
         "energetic and optimistic without being saccharine",
+        "austere and formal, with a deliberate emotional distance",
+        "sensual and warm, close and unhurried",
+        "unsettling in a way that is hard to place",
+        "hopeful but tired, the moment after effort rather than before it",
     ],
     "detail": [
         "fine surface texture visible — fabric weave, skin pores, dust motes in the air",
         "crisp micro-detail on the primary surfaces, gently falling off toward the frame edges",
         "tactile material rendering: brushed metal grain, matte paper fibre, condensation beads",
         "photographic grain structure of medium-format film, subtle and even",
+        "hyper-fine detail in the focal plane falling to soft impressionistic form at the edges",
+        "raw physical detail: chipped paint, hairline scratches, uneven wear along contact edges",
+        "clean, almost clinical rendering where every surface is described precisely and nothing is suggested",
+        "soft-focus rendering with detail present but never harsh, edges bloomed slightly by the light",
     ],
     "quality": [
         "photorealistic, ultra-detailed, sharp focus on the subject, natural depth of field, 8K resolution, professional colour grading",
@@ -1160,5 +1242,148 @@ ASPECT_BY_DOMAIN: dict[str, str] = {
     "personaj": "2:3",
     "ilustratie": "1:1",
     "interior": "3:2",
+    "general": "16:9",
+}
+
+
+# ---------------------------------------------------------------------------
+# DOMENII VIDEO
+# ---------------------------------------------------------------------------
+#
+# Un clip nu e o imagine care se mișcă: are durată, ritm, mișcare de cameră și,
+# tot mai des, sunet. Vocabularul de aici acoperă exact ce lipsește imaginii.
+
+COMMON_VIDEO: dict[str, list[str]] = {
+    "camera_move": [
+        "slow dolly in toward the subject, ending in a medium close-up, no zoom",
+        "locked-off static frame; only the subject moves within it",
+        "smooth lateral tracking shot following the subject at walking pace",
+        "handheld with restrained movement, breathing rather than shaking",
+        "slow crane rise revealing the wider space behind the subject",
+        "gentle orbit around the subject, holding the same distance throughout",
+        "push-in on a fixed axis, the background compressing as the shot tightens",
+    ],
+    "pacing": [
+        "one continuous take, no cuts, letting the moment play out in real time",
+        "three beats: establish, develop, resolve, with the change landing in the final third",
+        "steady rhythm with a single change of energy at the midpoint",
+        "slow build in the first half, quicker resolution in the second",
+    ],
+    "physics": [
+        "movement obeys weight and inertia: nothing accelerates instantly and nothing floats",
+        "cloth, hair and liquid respond to the motion with a natural lag",
+        "contact between objects produces the reaction it would in reality",
+    ],
+    "audio": [
+        "ambient sound of the location, no music, with one clear diegetic detail",
+        "sparse score entering only in the final third, under the ambience",
+        "no dialogue; the sound design carries the emotion",
+        "close, intimate sound: breath, fabric, footsteps on the surface underfoot",
+    ],
+    "transition": [
+        "opens on the action already in progress and ends before it fully resolves",
+        "starts from black and holds one beat of stillness before the movement begins",
+        "ends on a held frame that works as a still image",
+    ],
+    "look": [
+        "cinematic film look, shallow depth of field, natural motion blur at 180-degree shutter",
+        "documentary realism, available light, no stylised grade",
+        "clean commercial polish, controlled lighting, high dynamic range",
+    ],
+    "negative": [
+        "morphing faces", "flickering", "warping limbs", "unstable geometry",
+        "sudden style shifts", "text artefacts", "watermark", "jittery motion",
+        "objects popping in and out", "inconsistent lighting between frames",
+        "unnatural speed ramps", "duplicated subjects",
+    ],
+}
+
+VIDEO_DOMAINS: dict[str, dict[str, object]] = {
+    "reclama": {
+        "keywords": [
+            "reclama", "ad", "spot", "campanie", "promo", "produs video",
+            "commercial", "brand video", "lansare",
+        ],
+        "shot": [
+            "product hero shot with the subject entering frame in the first second",
+            "lifestyle scene where the product is used naturally, never presented to camera",
+        ],
+        "beat": [
+            "the benefit is visible before the brand appears",
+            "the final frame holds the product and nothing else",
+        ],
+    },
+    "cinematic": {
+        "keywords": [
+            "cinematic", "film", "scena", "scenă", "trailer", "scurtmetraj",
+            "atmosferic", "dramatic",
+        ],
+        "shot": [
+            "wide establishing frame that places the character in their world",
+            "intimate close-up held long enough to become uncomfortable",
+        ],
+        "beat": [
+            "the emotional turn happens in a single unbroken moment",
+            "the frame withholds as much as it shows",
+        ],
+    },
+    "social": {
+        "keywords": [
+            "tiktok", "reel", "short", "shorts", "story", "social", "viral",
+            "vertical", "clip scurt",
+        ],
+        "shot": [
+            "vertical framing with the subject centred and large in frame",
+            "first frame is a complete visual hook, readable without sound",
+        ],
+        "beat": [
+            "the payoff arrives before the third second",
+            "the last frame loops cleanly back into the first",
+        ],
+    },
+    "tutorial": {
+        "keywords": [
+            "tutorial", "explicativ", "demo", "demonstratie", "curs video",
+            "explainer", "how-to", "pas cu pas",
+        ],
+        "shot": [
+            "clear overhead or over-the-shoulder view of the hands and the work surface",
+            "framing that keeps both the tool and the result visible at once",
+        ],
+        "beat": [
+            "each step is visually distinct from the one before it",
+            "nothing important happens outside the frame",
+        ],
+    },
+    "produs": {
+        "keywords": ["packshot video", "produs", "unboxing", "detaliu produs"],
+        "shot": [
+            "slow rotation around the product against a controlled background",
+            "macro pass across the material transitions and the branding",
+        ],
+        "beat": [
+            "every surface of the product is seen at least once",
+            "the movement never outpaces the eye",
+        ],
+    },
+    "general": {
+        "keywords": [],
+        "shot": [
+            "medium shot holding the subject and enough context to read the situation",
+            "framing that stays stable while the action develops inside it",
+        ],
+        "beat": [
+            "one thing changes between the first frame and the last",
+            "the shot earns its duration",
+        ],
+    },
+}
+
+ASPECT_BY_VIDEO_DOMAIN: dict[str, str] = {
+    "reclama": "16:9",
+    "cinematic": "21:9",
+    "social": "9:16",
+    "tutorial": "16:9",
+    "produs": "1:1",
     "general": "16:9",
 }

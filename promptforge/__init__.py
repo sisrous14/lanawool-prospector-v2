@@ -10,7 +10,7 @@ Utilizare de bibliotecă:
 
 from __future__ import annotations
 
-from . import image_engine, text_engine
+from . import image_engine, text_engine, video_engine
 from .models import (
     Brief,
     DEFAULT_MAX_WORDS,
@@ -18,15 +18,18 @@ from .models import (
     GeneratedPrompt,
     MODE_IMAGE,
     MODE_TEXT,
+    MODE_VIDEO,
 )
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
     """Generează un prompt, alegând motorul după modul cerut."""
     if brief.mode == MODE_IMAGE:
         return image_engine.generate(brief, variant)
+    if brief.mode == MODE_VIDEO:
+        return video_engine.generate(brief, variant)
     return text_engine.generate(brief, variant)
 
 
@@ -48,6 +51,7 @@ __all__ = [
     "generate_many",
     "MODE_TEXT",
     "MODE_IMAGE",
+    "MODE_VIDEO",
     "DEFAULT_MIN_WORDS",
     "DEFAULT_MAX_WORDS",
     "__version__",

@@ -71,7 +71,8 @@ def sentence(text: str) -> str:
     if not text:
         return ""
     text = text[0].upper() + text[1:]
-    if text[-1] not in ".!?":
+    # Două puncte sau punct-virgulă închid deja rândul: un punct în plus ar da „:.”
+    if text[-1] not in ".!?:;":
         text += "."
     return text
 
@@ -90,6 +91,7 @@ def _clone(section: Section) -> Section:
         droppable=section.droppable,
         min_lines=section.min_lines,
         lead=section.lead,
+        expansions=list(section.expansions),
     )
 
 
@@ -115,11 +117,27 @@ def fit(
     def total() -> int:
         return count_words(draw(chosen))
 
-    # 1. Completare până la minim, din rezervă.
+    # 1. Completare până la minim: întâi secțiuni întregi din rezervă.
     while pool and total() < min_words:
         chosen.append(pool.pop(0))
 
-    # 2. Scurtare: prioritatea mare (cel mai puțin important) se sacrifică prima.
+    # 2. Dacă tot e prea scurt, se adaugă extensiile — pe rând, câte una din
+    #    fiecare secțiune, ca promptul să crească echilibrat, nu într-un singur loc.
+    if total() < min_words:
+        round_index = 0
+        while total() < min_words:
+            added = False
+            for section in chosen:
+                if round_index < len(section.expansions):
+                    section.lines.append(section.expansions[round_index])
+                    added = True
+                    if total() >= min_words:
+                        break
+            if not added:
+                break     # s-au epuizat extensiile
+            round_index += 1
+
+    # 3. Scurtare: prioritatea mare (cel mai puțin important) se sacrifică prima.
     #    În interiorul aceleiași priorități, secțiunile de la final cedează primele.
     def sacrifice_order() -> list[int]:
         return sorted(
@@ -134,7 +152,7 @@ def fit(
         if total() <= max_words:
             break
 
-    # 3. Dacă tot nu încape, se elimină secțiunile care pot lipsi cu totul.
+    # 4. Dacă tot nu încape, se elimină secțiunile care pot lipsi cu totul.
     if total() > max_words:
         for index in sacrifice_order():
             if chosen[index].min_lines == 0:

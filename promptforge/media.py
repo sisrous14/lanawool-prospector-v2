@@ -46,6 +46,20 @@ class ImageRef:
     media_type: str = ""
     data: str = ""              # base64, pentru fișiere locale
     url: str = ""               # adresă directă, pentru imagini de pe web
+    width: int = 0              # 0 = necunoscut (imagine de la o adresă)
+    height: int = 0
+
+    @property
+    def has_size(self) -> bool:
+        return self.width > 0 and self.height > 0
+
+    def size_note(self) -> str:
+        """Descrierea dimensiunii, pentru observații și pentru model."""
+        if not self.has_size:
+            return ""
+        from .catalog import describe_size
+
+        return describe_size(self.width, self.height)
 
     def to_block(self) -> dict:
         """Blocul de conținut acceptat de API."""
@@ -84,6 +98,69 @@ def _detect_media_type(raw: bytes, hint: str = "") -> str:
         f"Nu recunosc formatul pentru {hint or 'sursa dată'}. "
         f"Acceptate: JPEG, PNG, GIF, WebP."
     )
+
+
+def read_dimensions(raw: bytes) -> tuple[int, int]:
+    """Citește lățimea și înălțimea direct din antet, fără nicio dependență.
+
+    Întoarce (0, 0) dacă formatul nu poate fi citit — dimensiunea e utilă, dar
+    nu esențială, deci nu merită o excepție.
+    """
+    try:
+        # PNG: lățimea și înălțimea sunt în chunk-ul IHDR, imediat după semnătură.
+        if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
+            return (
+                int.from_bytes(raw[16:20], "big"),
+                int.from_bytes(raw[20:24], "big"),
+            )
+
+        # GIF: little-endian, imediat după semnătură.
+        if raw[:6] in (b"GIF87a", b"GIF89a") and len(raw) >= 10:
+            return (
+                int.from_bytes(raw[6:8], "little"),
+                int.from_bytes(raw[8:10], "little"),
+            )
+
+        # WebP: trei variante de container, fiecare cu alt loc pentru dimensiuni.
+        if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            chunk = raw[12:16]
+            if chunk == b"VP8X" and len(raw) >= 30:
+                width = int.from_bytes(raw[24:27], "little") + 1
+                height = int.from_bytes(raw[27:30], "little") + 1
+                return width, height
+            if chunk == b"VP8 " and len(raw) >= 30:
+                return (
+                    int.from_bytes(raw[26:28], "little") & 0x3FFF,
+                    int.from_bytes(raw[28:30], "little") & 0x3FFF,
+                )
+            if chunk == b"VP8L" and len(raw) >= 25:
+                bits = int.from_bytes(raw[21:25], "little")
+                return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+
+        # JPEG: se parcurg segmentele până la unul de tip SOF, care ține dimensiunile.
+        if raw.startswith(b"\xff\xd8"):
+            index = 2
+            while index + 9 < len(raw):
+                if raw[index] != 0xFF:
+                    index += 1
+                    continue
+                marker = raw[index + 1]
+                # SOF0..SOF15, mai puțin markerii care nu descriu un cadru.
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    return (
+                        int.from_bytes(raw[index + 7 : index + 9], "big"),
+                        int.from_bytes(raw[index + 5 : index + 7], "big"),
+                    )
+                if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                    index += 2
+                    continue
+                length = int.from_bytes(raw[index + 2 : index + 4], "big")
+                if length < 2:
+                    break
+                index += 2 + length
+    except (IndexError, ValueError):
+        return 0, 0
+    return 0, 0
 
 
 def _shrink(raw: bytes, media_type: str) -> tuple[bytes, str]:
@@ -163,11 +240,14 @@ def load_image(source: str, label: str = "") -> ImageRef:
         raise MediaError(f"Fișierul {source} este gol.")
     media_type = _detect_media_type(raw, path.name)
     raw, media_type = _shrink(raw, media_type)
+    width, height = read_dimensions(raw)
     return ImageRef(
         label=label,
         origin=str(path),
         media_type=media_type,
         data=base64.standard_b64encode(raw).decode("ascii"),
+        width=width,
+        height=height,
     )
 
 

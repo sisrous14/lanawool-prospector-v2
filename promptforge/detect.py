@@ -5,8 +5,8 @@ from __future__ import annotations
 import random
 import re
 
-from .models import MODE_IMAGE, MODE_TEXT
-from .vocab import IMAGE_DOMAINS, TEXT_DOMAINS, normalize
+from .models import MODE_IMAGE, MODE_TEXT, MODE_VIDEO
+from .vocab import IMAGE_DOMAINS, TEXT_DOMAINS, VIDEO_DOMAINS, normalize
 
 # Cuvinte prea frecvente ca să spună ceva despre subiect.
 _STOPWORDS = {
@@ -38,7 +38,10 @@ def detect_domain(idea: str, mode: str) -> str:
     Scorul e numărul de cuvinte-cheie găsite; la egalitate câștigă domeniul cu
     potrivirea cea mai lungă, ca „concept art” să bată „art”.
     """
-    table = IMAGE_DOMAINS if mode == MODE_IMAGE else TEXT_DOMAINS
+    table = {
+        MODE_IMAGE: IMAGE_DOMAINS,
+        MODE_VIDEO: VIDEO_DOMAINS,
+    }.get(mode, TEXT_DOMAINS)
     haystack = normalize(idea)
     best_domain = "general"
     best_score = (0, 0)
@@ -78,21 +81,45 @@ class Picker:
 
     Același `seed` dă mereu aceleași alegeri; `--variants` schimbă seed-ul și
     obține o direcție creativă diferită pentru aceeași idee.
+
+    `liked` și `disliked` vin din feedback-ul utilizatorului: descriptorii pe
+    care i-a marcat ca buni sunt preferați, cei marcați ca slabi sunt ocoliți —
+    dar niciodată în așa fel încât să rămână fără opțiuni.
     """
 
-    def __init__(self, seed: int) -> None:
+    def __init__(
+        self,
+        seed: int,
+        liked: set[str] | None = None,
+        disliked: set[str] | None = None,
+    ) -> None:
         self._random = random.Random(seed)
+        self._liked = liked or set()
+        self._disliked = disliked or set()
+        self.chosen: list[str] = []
+
+    def _shortlist(self, options: list[str]) -> list[str]:
+        allowed = [option for option in options if option not in self._disliked]
+        if not allowed:
+            allowed = options            # totul e pe lista neagră: o ignorăm
+        preferred = [option for option in allowed if option in self._liked]
+        return preferred or allowed
 
     def one(self, options: list[str], fallback: str = "") -> str:
         if not options:
             return fallback
-        return self._random.choice(options)
+        choice = self._random.choice(self._shortlist(options))
+        self.chosen.append(choice)
+        return choice
 
     def some(self, options: list[str], count: int) -> list[str]:
         if not options:
             return []
-        count = min(count, len(options))
-        return self._random.sample(options, count)
+        allowed = self._shortlist(options)
+        count = min(count, len(allowed))
+        picks = self._random.sample(allowed, count)
+        self.chosen.extend(picks)
+        return picks
 
 
-__all__ = ["detect_domain", "keywords_of", "Picker", "MODE_TEXT", "MODE_IMAGE"]
+__all__ = ["detect_domain", "keywords_of", "Picker", "MODE_TEXT", "MODE_IMAGE", "MODE_VIDEO"]

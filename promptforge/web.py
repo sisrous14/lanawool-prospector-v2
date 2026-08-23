@@ -13,10 +13,19 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import generate_many
+from .catalog import MODELS, PLATFORMS, PRICING_DISCLAIMER, SIZES, parse_size
 from .media import ImageRef, MediaError, SUPPORTED_TYPES
-from .models import Brief, DEFAULT_MAX_WORDS, DEFAULT_MIN_WORDS, MODE_IMAGE, MODE_TEXT
-from .targets import IMAGE_TARGETS, TEXT_TARGETS
-from .vocab import IMAGE_DOMAINS, TEXT_DOMAINS, TONES
+from .models import (
+    Brief,
+    DEFAULT_MAX_WORDS,
+    DEFAULT_MIN_WORDS,
+    MAX_ALLOWED_WORDS,
+    MODE_IMAGE,
+    MODE_TEXT,
+    MODE_VIDEO,
+)
+from .targets import IMAGE_TARGETS, TEXT_TARGETS, VIDEO_TARGETS
+from .vocab import IMAGE_DOMAINS, TEXT_DOMAINS, TONES, VIDEO_DOMAINS
 
 PAGE = """<!doctype html>
 <html lang="ro">
@@ -75,30 +84,47 @@ PAGE = """<!doctype html>
           color: var(--accent); border: 1px solid var(--line); }
   .notes { font-size: .88rem; color: var(--muted); margin-top: .6rem; padding-left: 1.1rem; }
   .err { color: #c0392b; margin-top: 1rem; }
+  .drop {
+    border: 2px dashed var(--line); border-radius: 12px; padding: 1.5rem 1rem;
+    text-align: center; cursor: pointer; display: flex; flex-direction: column;
+    gap: .3rem; color: var(--muted); transition: border-color .15s, background .15s;
+  }
+  .drop strong { color: var(--fg); font-size: .95rem; }
+  .drop span { font-size: .82rem; }
+  .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .pricing { font-size: .78rem; color: var(--muted); margin: .3rem 0 0; }
   .thumbs { display: flex; gap: .5rem; flex-wrap: wrap; margin: .75rem 0 0; }
   .thumbs figure { margin: 0; text-align: center; font-size: .75rem; color: var(--muted); }
   .thumbs img { width: 86px; height: 86px; object-fit: cover; border-radius: 8px;
                 border: 1px solid var(--line); display: block; }
+  .thumbs button { margin: .2rem 0 0; padding: .1rem .45rem; font-size: .72rem;
+                   background: transparent; color: var(--muted); border: 1px solid var(--line); }
 </style>
 </head>
 <body>
 <main>
   <h1>PromptForge</h1>
-  <p class="lead">Transformă o idee într-un prompt detaliat, de 300–500 de cuvinte.</p>
+  <p class="lead">Transformă o idee într-un prompt detaliat — de la 300 până la 3000 de cuvinte.</p>
 
   <div class="card">
     <div class="modes">
       <button type="button" id="mode-text" aria-pressed="true">Text</button>
       <button type="button" id="mode-image" aria-pressed="false">Imagine</button>
+      <button type="button" id="mode-video" aria-pressed="false">Video</button>
       <button type="button" id="mode-vision" aria-pressed="false">Din poze</button>
     </div>
 
     <div class="vision-only" hidden>
-      <label for="files">Poze (una sau mai multe)</label>
-      <input id="files" type="file" accept="image/*" multiple>
+      <div id="drop" class="drop" tabindex="0" role="button"
+           aria-label="Trage pozele aici sau apasă pentru a alege">
+        <strong>Trage pozele aici</strong>
+        <span>sau apasă pentru a alege &middot; poți lipi și cu Ctrl+V &middot;
+              se adaugă la cele existente</span>
+        <input id="files" type="file" accept="image/*" multiple hidden>
+      </div>
       <label for="links" style="margin-top:.9rem">sau adrese web, una pe rând</label>
       <textarea id="links" style="min-height:3rem" placeholder="https://exemplu.ro/poza.jpg"></textarea>
-      <p class="thumbs" id="thumbs"></p>
+      <div class="thumbs" id="thumbs"></div>
     </div>
 
     <label for="idea" id="idea-label">Ideea ta</label>
@@ -134,12 +160,25 @@ PAGE = """<!doctype html>
         <input id="subject" placeholder="opțional">
       </div>
       <div>
+        <label for="platform">Platformă</label>
+        <select id="platform"></select>
+      </div>
+      <div class="image-only" hidden>
+        <label for="size">Dimensiune</label>
+        <input id="size" list="size-list" placeholder="ex. 1080x1920">
+        <datalist id="size-list"></datalist>
+      </div>
+      <div class="video-only" hidden>
+        <label for="duration">Durată (secunde)</label>
+        <input id="duration" type="number" min="2" max="60" placeholder="8">
+      </div>
+      <div>
         <label for="minw">Minim cuvinte</label>
         <input id="minw" type="number" value="__MIN__">
       </div>
       <div>
         <label for="maxw">Maxim cuvinte</label>
-        <input id="maxw" type="number" value="__MAX__">
+        <input id="maxw" type="number" value="__MAX__" min="60" max="__LIMIT__">
       </div>
     </div>
 
@@ -152,6 +191,7 @@ PAGE = """<!doctype html>
       <textarea id="avoid" style="min-height:3.5rem"></textarea>
     </div>
 
+    <p class="pricing" id="pricing"></p>
     <button id="go">Generează</button>
   </div>
 
@@ -173,51 +213,129 @@ function fillSelect(el, values, blankLabel) {
   }
   for (const value of values) {
     const opt = document.createElement("option");
-    opt.value = value; opt.textContent = value;
+    if (typeof value === "string") {
+      opt.value = value; opt.textContent = value;
+    } else {
+      opt.value = value.key;
+      // Eticheta de preț stă lângă nume, ca alegerea să fie informată.
+      opt.textContent = value.pricing
+        ? value.label + " — " + value.pricing
+        : value.label;
+      opt.dataset.note = value.note || "";
+    }
     el.appendChild(opt);
   }
 }
 
+function showPricing() {
+  const option = $("target").selectedOptions[0];
+  $("pricing").textContent = (option && option.dataset.note) || "";
+}
+
+const MODES = ["text", "image", "video", "vision"];
+
 function applyMode() {
-  for (const name of ["text", "image", "vision"]) {
+  for (const name of MODES) {
     $("mode-" + name).setAttribute("aria-pressed", mode === name);
   }
   document.querySelectorAll(".text-only").forEach(el => el.hidden = mode !== "text");
-  document.querySelectorAll(".image-only").forEach(el => el.hidden = mode === "text");
+  document.querySelectorAll(".image-only").forEach(el => el.hidden = mode === "text" || mode === "video");
+  document.querySelectorAll(".video-only").forEach(el => el.hidden = mode !== "video");
   document.querySelectorAll(".vision-only").forEach(el => el.hidden = mode !== "vision");
   $("idea-label").textContent = mode === "vision"
     ? "Ce vrei să obții din poze (ex: ia lumina din imaginea 1 și pune-o peste subiectul din imaginea 2)"
     : "Ideea ta";
   $("domain").parentElement.hidden = mode === "vision";
-  const key = mode === "text" ? "text" : "image";
+  const key = mode === "vision" ? "image" : mode;
   fillSelect($("target"), CONFIG.targets[key], "implicit");
   fillSelect($("domain"), CONFIG.domains[key], "detectare automată");
+  showPricing();
 }
 
-for (const name of ["text", "image", "vision"]) {
+for (const name of MODES) {
   $("mode-" + name).onclick = () => { mode = name; applyMode(); };
 }
+$("target").onchange = showPricing;
 
+// --- Pozele: adăugate prin buton, prin tragere sau prin lipire. Se adună în
+// aceeași sesiune, nu se înlocuiesc, și fiecare poate fi scoasă individual.
 const picked = [];
-$("files").onchange = async (event) => {
-  picked.length = 0;
+
+function renderThumbs() {
   $("thumbs").innerHTML = "";
-  for (const file of event.target.files) {
-    const data = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-    picked.push({ name: file.name, data_url: data });
+  picked.forEach((item, index) => {
     const figure = document.createElement("figure");
-    figure.innerHTML = '<img alt="' + escapeHtml(file.name) + '" src="' + data + '">' +
-                       "<figcaption>imaginea " + picked.length + "</figcaption>";
+    const img = document.createElement("img");
+    img.src = item.data_url;
+    img.alt = item.name;
+    const caption = document.createElement("figcaption");
+    caption.textContent = "imaginea " + (index + 1);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "scoate";
+    remove.onclick = () => { picked.splice(index, 1); renderThumbs(); };
+    figure.append(img, caption, remove);
     $("thumbs").appendChild(figure);
+  });
+}
+
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addFiles(files) {
+  for (const file of files) {
+    if (!file || !file.type.startsWith("image/")) continue;
+    picked.push({ name: file.name || "poza", data_url: await readFile(file) });
   }
+  renderThumbs();
+}
+
+$("files").onchange = (event) => {
+  addFiles(event.target.files);
+  event.target.value = "";     // aceeași poză poate fi aleasă din nou
 };
 
+const drop = $("drop");
+drop.onclick = () => $("files").click();
+drop.onkeydown = (event) => {
+  if (event.key === "Enter" || event.key === " ") { event.preventDefault(); $("files").click(); }
+};
+for (const name of ["dragenter", "dragover"]) {
+  drop.addEventListener(name, (event) => {
+    event.preventDefault();
+    drop.classList.add("over");
+  });
+}
+for (const name of ["dragleave", "drop"]) {
+  drop.addEventListener(name, (event) => {
+    event.preventDefault();
+    drop.classList.remove("over");
+  });
+}
+drop.addEventListener("drop", (event) => {
+  if (event.dataTransfer && event.dataTransfer.files.length) {
+    addFiles(event.dataTransfer.files);
+  }
+});
+document.addEventListener("paste", (event) => {
+  if (mode !== "vision" || !event.clipboardData) return;
+  const files = Array.from(event.clipboardData.files || []);
+  if (files.length) { event.preventDefault(); addFiles(files); }
+});
+
 fillSelect($("tone"), CONFIG.tones, "implicit");
+fillSelect($("platform"), CONFIG.platforms, "niciuna");
+for (const name of CONFIG.sizes) {
+  const option = document.createElement("option");
+  option.value = name;
+  $("size-list").appendChild(option);
+}
 applyMode();
 
 function lines(id) {
@@ -250,8 +368,11 @@ $("go").onclick = async () => {
     avoid: lines("avoid"),
     tone: mode === "text" ? ($("tone").value || null) : null,
     audience: mode === "text" ? ($("audience").value.trim() || null) : null,
-    aspect: mode === "image" ? ($("aspect").value.trim() || null) : null,
-    subject: mode === "image" ? ($("subject").value.trim() || null) : null,
+    aspect: mode !== "text" ? ($("aspect").value.trim() || null) : null,
+    subject: mode !== "text" ? ($("subject").value.trim() || null) : null,
+    platform: $("platform").value || null,
+    size: mode !== "text" ? ($("size").value.trim() || null) : null,
+    duration: mode === "video" ? (parseInt($("duration").value, 10) || 0) : 0,
   };
 
   if (mode === "vision") {
@@ -312,6 +433,32 @@ MAX_JSON_BYTES = 100_000
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024
 
 
+def _brief_from_payload(payload: dict, mode: str | None = None) -> Brief:
+    """Construiește briefull din corpul cererii web, validând ce vine de afară."""
+    width = height = 0
+    if payload.get("size"):
+        width, height = parse_size(str(payload["size"]))
+
+    return Brief(
+        idea=payload.get("idea", ""),
+        mode=mode or payload.get("mode", MODE_TEXT),
+        domain=payload.get("domain") or None,
+        target=payload.get("target") or None,
+        audience=payload.get("audience") or None,
+        tone=payload.get("tone") or None,
+        aspect=payload.get("aspect") or None,
+        subject=payload.get("subject") or None,
+        platform=payload.get("platform") or None,
+        width=width,
+        height=height,
+        duration=int(payload.get("duration") or 0),
+        must=list(payload.get("must") or []),
+        avoid=list(payload.get("avoid") or []),
+        min_words=int(payload.get("min_words") or DEFAULT_MIN_WORDS),
+        max_words=int(payload.get("max_words") or DEFAULT_MAX_WORDS),
+    )
+
+
 def _decode_uploads(raw_images: list) -> list[ImageRef]:
     """Transformă pozele din formular (data-URL) în surse pentru analiză."""
     images: list[ImageRef] = []
@@ -337,21 +484,41 @@ def _decode_uploads(raw_images: list) -> list[ImageRef]:
 
 
 def _page() -> bytes:
+    def with_pricing(keys: list[str], kind: str) -> list[dict]:
+        """Fiecare țintă, cu eticheta de preț a modelului corespunzător."""
+        rows = []
+        for key in sorted(keys):
+            model = MODELS.get(key) or MODELS.get(f"{key}-{kind}")
+            rows.append({
+                "key": key,
+                "label": model.label if model else key,
+                "pricing": model.pricing if model else "",
+                "note": model.pricing_note if model else "",
+            })
+        return rows
+
     config = {
         "targets": {
-            MODE_TEXT: sorted(TEXT_TARGETS),
-            MODE_IMAGE: sorted(IMAGE_TARGETS),
+            MODE_TEXT: with_pricing(list(TEXT_TARGETS), "text"),
+            MODE_IMAGE: with_pricing(list(IMAGE_TARGETS), "image"),
+            MODE_VIDEO: with_pricing(list(VIDEO_TARGETS), "video"),
         },
         "domains": {
             MODE_TEXT: sorted(TEXT_DOMAINS),
             MODE_IMAGE: sorted(IMAGE_DOMAINS),
+            MODE_VIDEO: sorted(VIDEO_DOMAINS),
         },
         "tones": sorted(TONES),
+        "platforms": [{"key": k, "label": v.label} for k, v in sorted(PLATFORMS.items())],
+        "sizes": sorted(SIZES),
+        "maxWords": MAX_ALLOWED_WORDS,
+        "pricingDisclaimer": PRICING_DISCLAIMER,
     }
     html = (
         PAGE.replace("__CONFIG__", json.dumps(config))
         .replace("__MIN__", str(DEFAULT_MIN_WORDS))
         .replace("__MAX__", str(DEFAULT_MAX_WORDS))
+        .replace("__LIMIT__", str(MAX_ALLOWED_WORDS))
     )
     return html.encode("utf-8")
 
@@ -405,20 +572,7 @@ class Handler(BaseHTTPRequestHandler):
         variants = payload.pop("variants", 1)
         try:
             variants = max(1, min(5, int(variants)))
-            brief = Brief(
-                idea=payload.get("idea", ""),
-                mode=payload.get("mode", MODE_TEXT),
-                domain=payload.get("domain") or None,
-                target=payload.get("target") or None,
-                audience=payload.get("audience") or None,
-                tone=payload.get("tone") or None,
-                aspect=payload.get("aspect") or None,
-                subject=payload.get("subject") or None,
-                must=list(payload.get("must") or []),
-                avoid=list(payload.get("avoid") or []),
-                min_words=int(payload.get("min_words") or DEFAULT_MIN_WORDS),
-                max_words=int(payload.get("max_words") or DEFAULT_MAX_WORDS),
-            )
+            brief = _brief_from_payload(payload)
             results = generate_many(brief, variants)
         except (ValueError, TypeError) as exc:
             self._send_json(400, {"error": str(exc)})
@@ -456,6 +610,10 @@ class Handler(BaseHTTPRequestHandler):
             if bundle.empty:
                 raise MediaError("Nu ai trimis nicio poză și niciun link.")
 
+            width = height = 0
+            if payload.get("size"):
+                width, height = parse_size(str(payload["size"]))
+
             brief, results = from_bundle(
                 bundle,
                 str(payload.get("idea") or "").strip(),
@@ -464,6 +622,9 @@ class Handler(BaseHTTPRequestHandler):
                 model=str(payload.get("model") or DEFAULT_MODEL),
                 target=payload.get("target") or None,
                 aspect=payload.get("aspect") or None,
+                platform=payload.get("platform") or None,
+                width=width,
+                height=height,
                 must=list(payload.get("must") or []),
                 avoid=list(payload.get("avoid") or []),
                 min_words=int(payload.get("min_words") or DEFAULT_MIN_WORDS),

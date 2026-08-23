@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 from .assembly import count_words, fit, range_note, render_section
+from .catalog import PLATFORMS
+from .depth import (
+    EXTRA_AVOID,
+    EXTRA_METHOD,
+    EXTRA_MUST,
+    EXTRA_QUALITY,
+    platform_section,
+    text_depth,
+)
+from . import feedback
 from .detect import Picker, detect_domain, keywords_of
 from .models import Brief, GeneratedPrompt, MODE_TEXT, Section
 from .targets import TEXT_TARGETS, default_text_target
@@ -22,6 +32,7 @@ LABELS: dict[str, tuple[str, str, str]] = {
     "avoid": ("DE EVITAT", "AVOID", "de_evitat"),
     "check": ("VERIFICARE FINALĂ", "FINAL CHECK", "verificare"),
     "depth": ("NIVEL DE DETALIU", "LEVEL OF DETAIL", "detaliu"),
+    "platform": ("REGULI DE PLATFORMĂ", "PLATFORM RULES", "platforma"),
 }
 
 
@@ -155,6 +166,12 @@ def build_sections(brief: Brief, domain: str, picker: Picker) -> tuple[list[Sect
         )
     sections.append(Section(_title("deliverable", lang), [deliverable_text], priority=1))
 
+    # --- PLATFORMĂ ----------------------------------------------------------
+    if brief.platform:
+        rules = platform_section(brief.platform, "text", lang)
+        if rules is not None:
+            sections.append(rules)
+
     # --- CERINȚE OBLIGATORII ----------------------------------------------
     if lang == "ro":
         must_lines = [
@@ -179,13 +196,13 @@ def build_sections(brief: Brief, domain: str, picker: Picker) -> tuple[list[Sect
     must_lines = list(brief.must) + must_lines
     sections.append(
         Section(_title("must", lang), must_lines, priority=1, bullet="1.",
-                droppable=True, min_lines=3)
+                droppable=True, min_lines=3, expansions=list(EXTRA_MUST[lang]))
     )
 
     # --- METODĂ ------------------------------------------------------------
     sections.append(
         Section(_title("method", lang), steps, priority=1, bullet="1.",
-                droppable=True, min_lines=4)
+                droppable=True, min_lines=4, expansions=list(EXTRA_METHOD[lang]))
     )
 
     # --- TON ---------------------------------------------------------------
@@ -215,7 +232,8 @@ def build_sections(brief: Brief, domain: str, picker: Picker) -> tuple[list[Sect
         prefix = "Before delivering, check every point:"
     sections.append(
         Section(_title("quality", lang), quality_lines, priority=2, bullet="-",
-                droppable=True, min_lines=3, lead=prefix)
+                droppable=True, min_lines=3, lead=prefix,
+                expansions=list(EXTRA_QUALITY[lang]))
     )
 
     # --- FORMAT ------------------------------------------------------------
@@ -239,7 +257,7 @@ def build_sections(brief: Brief, domain: str, picker: Picker) -> tuple[list[Sect
         avoid_lines.append("answers that could be given to any other similar request")
     sections.append(
         Section(_title("avoid", lang), avoid_lines, priority=2, bullet="-",
-                droppable=True, min_lines=2)
+                droppable=True, min_lines=2, expansions=list(EXTRA_AVOID[lang]))
     )
 
     # --- REZERVĂ (folosită doar dacă textul e sub minim) --------------------
@@ -303,6 +321,7 @@ def build_sections(brief: Brief, domain: str, picker: Picker) -> tuple[list[Sect
             )
         )
 
+    reserve.extend(text_depth(lang))
     return sections, reserve
 
 
@@ -347,7 +366,8 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
             f"Țintă necunoscută: {target!r}. Disponibile: {', '.join(sorted(TEXT_TARGETS))}"
         )
 
-    picker = Picker(brief.seed + variant * 1000)
+    liked, disliked = feedback.preferences()
+    picker = Picker(brief.seed + variant * 1000, liked, disliked)
     sections, reserve = build_sections(brief, domain, picker)
 
     style = TEXT_TARGETS[target]["style"]
@@ -364,6 +384,12 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
     warning = range_note(word_count, brief.min_words, brief.max_words)
     if warning:
         notes.insert(0, warning)
+    if word_count > 1200:
+        notes.append(
+            "Prompt lung. Peste circa 1000 de cuvinte, modelele urmăresc tot mai slab "
+            "instrucțiunile de la mijloc; câștigul scade, iar riscul de contradicții "
+            "crește. Folosește lungimea asta când chiar ai de spus atât."
+        )
 
     return GeneratedPrompt(
         prompt=prompt,
@@ -373,4 +399,5 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
         word_count=word_count,
         variant=variant,
         notes=notes,
+        used_descriptors=picker.chosen,
     )

@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import re
 
+from . import store
 from .vocab import normalize
+
+LEXICON_FILE = "lexicon.json"
 
 # Etichete: substantiv (n), adjectiv (adj), prepoziție (prep), determinant (det),
 # verb la gerunziu/participiu (v), altele (x).
@@ -268,8 +271,47 @@ _SUFFIXES = ["ului", "elor", "ilor", "lui", "ele", "ile", "ul", "le", "ii", "a",
 _TOKEN_RE = re.compile(r"[a-zăâîșşțţ]+|\d+|[^\sa-zăâîșşțţ\d]", re.IGNORECASE)
 
 
-def _lookup(word: str) -> tuple[str, str] | None:
-    """Caută un cuvânt, încercând și formele articulate sau de plural."""
+def learned() -> dict[str, str]:
+    """Perechile române-engleze pe care le-ai corectat tu, salvate local."""
+    data = store.read_json(LEXICON_FILE, {})
+    if not isinstance(data, dict):
+        return {}
+    return {normalize(k): str(v) for k, v in data.items() if isinstance(v, str) and v.strip()}
+
+
+def learn(romanian: str, english: str) -> None:
+    """Reține o traducere dată de utilizator, ca data viitoare să o știe.
+
+    Când corectezi subiectul unei imagini cu `--subject`, perechea ajunge aici.
+    Lexiconul offline crește astfel cu fiecare corecție, fără niciun apel de rețea.
+    """
+    key = normalize(romanian).strip()
+    value = english.strip()
+    if not key or not value or key == normalize(value):
+        return
+    data = store.read_json(LEXICON_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
+    data[key] = value
+    store.write_json(LEXICON_FILE, data)
+
+
+def forget(romanian: str) -> bool:
+    data = store.read_json(LEXICON_FILE, {})
+    key = normalize(romanian).strip()
+    if not isinstance(data, dict) or key not in data:
+        return False
+    del data[key]
+    store.write_json(LEXICON_FILE, data)
+    return True
+
+
+def lookup_romanian(word: str) -> tuple[str, str] | None:
+    """Caută un cuvânt românesc, încercând și formele articulate sau de plural.
+
+    Întoarce perechea (traducere, parte de vorbire) sau None. Folosită și de
+    detecția limbii: dacă lexiconul recunoaște cuvintele, textul e românesc.
+    """
     key = normalize(word)
     if key in LEXICON:
         return LEXICON[key]
@@ -340,11 +382,20 @@ def to_english(text: str, min_coverage: float = 0.6) -> tuple[str, float]:
     """
     lowered = normalize(text)
 
+    # O corecție salvată pentru exact această frază bate orice altceva.
+    memory = learned()
+    if lowered.strip() in memory:
+        return memory[lowered.strip()], 1.0
+
     # Expresiile fixe se rezolvă întâi, ca „în picioare” să nu devină „in feet”.
     # Se înlocuiesc cu un marker numeric, fără spații: un marker cu spații ar fi
     # rupt de `split()` mai jos, iar fraza s-ar pierde.
     resolved: list[tuple[str, str]] = []
-    for phrase, entry in sorted(PHRASES.items(), key=lambda kv: -len(kv[0])):
+    # Fragmentele învățate intră în aceeași mecanică de expresii fixe.
+    phrases = dict(PHRASES)
+    for key, value in memory.items():
+        phrases.setdefault(key, (value, N))
+    for phrase, entry in sorted(phrases.items(), key=lambda kv: -len(kv[0])):
         pattern = r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])"
         if re.search(pattern, lowered):
             lowered = re.sub(pattern, f" \x00{len(resolved)}\x00 ", lowered)
@@ -366,7 +417,7 @@ def to_english(text: str, min_coverage: float = 0.6) -> tuple[str, float]:
                 if token.isdigit():
                     tagged.append((token, X))
                 continue
-            entry = _lookup(token)
+            entry = lookup_romanian(token)
             is_content = len(token) > 2
             if is_content:
                 content += 1
@@ -409,6 +460,8 @@ IMAGE_LABELS: dict[str, str] = {
     "ADDITIONAL DIRECTION": "INDICAȚIE SUPLIMENTARĂ",
     "COHERENCE": "COERENȚĂ",
     "FOCUS DISCIPLINE": "PRIORITATE",
+    "OUTPUT SPECIFICATION": "SPECIFICAȚIE DE IEȘIRE",
+    "PLATFORM RULES": "REGULI DE PLATFORMĂ",
 }
 
 # Frazele de legătură, în ordinea în care apar în image_engine.
