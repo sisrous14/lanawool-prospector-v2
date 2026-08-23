@@ -69,7 +69,11 @@ oprit precedentul.
 ```bash
 promptforge text "un manual complet despre paine cu maia" --max-words 9000
 promptforge text "o documentatie de API" --parts 12
+promptforge seo --file ghid.txt --parts 6
 ```
+
+Lanțul e pentru lucrări de text: modurile `text` și `seo`. Imaginea și clipul
+încap oricum într-un singur prompt.
 
 ```
 VERIGA 1/4   • Cere planul lucrării, apoi scrie partea 1.
@@ -285,6 +289,8 @@ promptforge seo --url https://exemplu.ro/produs --tip produs --intent tranzactio
 promptforge seo --image poza.jpg --tip imagine
 promptforge seo "ghid despre paine cu maia" --keyword "paine cu maia"
 ```
+
+Comanda `seo` acceptă și `--parts`, `--strict` și `--refine`, exact ca `text`.
 
 Cuvintele-cheie se **extrag din conținutul tău**, local, fără niciun apel de
 rețea: frecvență peste cuvinte și peste perechi de cuvinte, cu deduplicare pe

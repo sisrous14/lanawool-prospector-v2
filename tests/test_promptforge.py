@@ -1848,3 +1848,330 @@ class TestContractSDK(unittest.TestCase):
             path.write_bytes(TestDimensiuniImagine._png(800, 600))
             with self.assertRaises(VisionError):
                 from_sources([str(path)], "descrie")
+
+
+# ---------------------------------------------------------------------------
+# Ce rămăsese neacoperit: micșorarea pozelor, citirea paginilor web,
+# scrierea fără `fcntl` și rafinarea pe toate modurile.
+# ---------------------------------------------------------------------------
+
+def _pillow_disponibil() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("PIL") is not None
+
+
+@unittest.skipUnless(_pillow_disponibil(), "Pillow nu e instalat")
+class TestMicsorarePoze(unittest.TestCase):
+    """Peste 5 MB, poza se micșorează înainte de a pleca spre model."""
+
+    @staticmethod
+    def _png_mare(side: int) -> bytes:
+        from PIL import Image
+
+        # Zgomot, ca PNG-ul să nu se comprime la câțiva kilobaiți.
+        noise = os.urandom(side * side * 3)
+        image = Image.frombytes("RGB", (side, side), noise)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    def test_poza_uriasa_ajunge_sub_limita(self):
+        raw = self._png_mare(1400)
+        self.assertGreater(len(raw), 5 * 1024 * 1024, "testul are nevoie de o poză peste limită")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mare.png"
+            path.write_bytes(raw)
+            ref = load_image(str(path))
+
+        self.assertEqual(ref.media_type, "image/jpeg", "poza mare se recodează ca JPEG")
+        self.assertLess(len(base64.standard_b64decode(ref.data)), 5 * 1024 * 1024)
+        self.assertLessEqual(max(ref.width, ref.height), 1568)
+        self.assertGreater(min(ref.width, ref.height), 0)
+
+    def test_poza_mica_ramane_neatinsa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mica.png"
+            path.write_bytes(TestDimensiuniImagine._png(400, 300))
+            ref = load_image(str(path))
+
+        self.assertEqual(ref.media_type, "image/png")
+        self.assertEqual((ref.width, ref.height), (400, 300))
+
+
+class TestCitirePaginiWeb(unittest.TestCase):
+    """`load_page` și `load_source` puse în fața unui server HTTP adevărat."""
+
+    PAGINA = (
+        "<html><head><title>Paine cu maia | Brutaria X</title>"
+        "<meta property='og:image' content='/poza.png'>"
+        "<style>body{color:red}</style><script>var a=1;</script></head>"
+        "<body><h1>P&#226;ine cu maia</h1><p>Coapt&amp;#259; &icirc;n cuptor cu lemne.</p>"
+        "<p>" + "Aluat crescut lent, coaja groasa. " * 20 + "</p></body></html>"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        pagina = cls.PAGINA.encode("utf-8")
+        poza = TestMedia.PNG
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):        # fără zgomot în raportul testelor
+                pass
+
+            def _send(self, code, body, ctype):
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path == "/":
+                    self._send(200, pagina, "text/html; charset=utf-8")
+                elif self.path == "/mutata":
+                    self.send_response(302)
+                    self.send_header("Location", "/")
+                    self.end_headers()
+                elif self.path == "/poza.png":
+                    self._send(200, poza, "image/png")
+                elif self.path == "/goala":
+                    self._send(200, b"<html><body></body></html>", "text/html")
+                elif self.path == "/stricat":
+                    self._send(500, b"eroare", "text/plain")
+                else:
+                    self._send(404, b"nu exista", "text/plain")
+
+        cls.server = HTTPServer(("127.0.0.1", 0), Handler)
+        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+
+    def test_ia_titlul_si_textul(self):
+        from promptforge.media import load_page
+
+        page = load_page(self.base + "/")
+        self.assertEqual(page.title, "Paine cu maia | Brutaria X")
+        self.assertIn("cuptor cu lemne", page.text)
+
+    def test_arunca_scripturile_si_stilurile(self):
+        from promptforge.media import load_page
+
+        page = load_page(self.base + "/")
+        self.assertNotIn("var a=1", page.text)
+        self.assertNotIn("color:red", page.text)
+
+    def test_gaseste_poza_de_reprezentare(self):
+        from promptforge.media import load_page
+
+        page = load_page(self.base + "/")
+        self.assertTrue(page.preview_image.endswith("/poza.png"), page.preview_image)
+
+    def test_urmeaza_redirectarea(self):
+        from promptforge.media import load_page
+
+        self.assertEqual(load_page(self.base + "/mutata").title, "Paine cu maia | Brutaria X")
+
+    def test_pagina_goala_e_eroare(self):
+        from promptforge.media import load_page
+
+        with self.assertRaises(MediaError):
+            load_page(self.base + "/goala")
+
+    def test_pagina_lipsa_sau_stricata_e_eroare(self):
+        from promptforge.media import load_page
+
+        for cale in ("/lipsa", "/stricat"):
+            with self.assertRaises(MediaError):
+                load_page(self.base + cale)
+
+    def test_load_source_alege_intre_pagina_si_poza(self):
+        from promptforge.media import PageRef, load_source
+
+        self.assertIsInstance(load_source(self.base + "/"), PageRef)
+        self.assertIsInstance(load_source(self.base + "/poza.png"), ImageRef)
+
+    def test_poza_de_pe_web_pleaca_prin_adresa(self):
+        # Modelul descarcă singur adresa; nu are rost s-o cărăm noi prin base64.
+        from promptforge.media import load_source
+
+        ref = load_source(self.base + "/poza.png")
+        self.assertEqual(ref.to_block()["source"]["type"], "url")
+        self.assertFalse(ref.data)
+
+
+class TestScriereFaraFcntl(unittest.TestCase):
+    """Pe Windows nu există `fcntl`; încuietoarea din proces trebuie să țină."""
+
+    def setUp(self):
+        from promptforge import store
+
+        self.store = store
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        self._tmp = tempfile.mkdtemp()
+        os.environ["PROMPTFORGE_HOME"] = self._tmp
+        self._fcntl = store.fcntl
+        store.fcntl = None
+
+    def tearDown(self):
+        self.store.fcntl = self._fcntl
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def test_scrie_si_citeste(self):
+        self.store.write_json("t.json", {"a": 1})
+        self.assertEqual(self.store.read_json("t.json", None), {"a": 1})
+
+    def test_actualizarile_din_fire_paralele_nu_se_pierd(self):
+        def adauga(i):
+            self.store.update_json("f.json", lambda d: {**d, str(i): i}, {})
+
+        fire = [threading.Thread(target=adauga, args=(i,)) for i in range(40)]
+        for fir in fire:
+            fir.start()
+        for fir in fire:
+            fir.join()
+        self.assertEqual(len(self.store.read_json("f.json", {})), 40)
+
+    def test_nu_lasa_temporare_in_urma(self):
+        self.store.write_json("t.json", {"a": 1})
+        self.assertEqual([p for p in os.listdir(self._tmp) if p.endswith(".tmp")], [])
+
+
+class TestRafinarePeToateModurile(unittest.TestCase):
+    """`--refine` trebuie să funcționeze la fel în text, imagine, video și SEO."""
+
+    RASPUNS = ("<<<PROMPT>>>\nUn prompt rescris de model, destul de lung cât să treacă "
+               "drept rezultat.\n<<<NEGATIVE>>>\nblurry, watermark\n<<<PARAMS>>>\n--ar 16:9\n")
+
+    def setUp(self):
+        from promptforge import llm
+
+        self.llm = llm
+        self.cereri = []
+        self._make = llm.make_sender
+        llm.make_sender = lambda: self._trimite
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        os.environ["PROMPTFORGE_HOME"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        self.llm.make_sender = self._make
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def _trimite(self, system, content, model, effort, **rest):
+        self.cereri.append({"model": model, "effort": effort,
+                            "text": content[0]["text"]})
+        return self.RASPUNS
+
+    @staticmethod
+    def _brief(mode):
+        extra = {
+            "text": {},
+            "image": {"target": "flux"},
+            "video": {"target": "sora", "duration": 8},
+            "seo": {"source_text": "Paine cu maia, coapta in cuptor cu lemne. " * 12,
+                    "keyword": "paine cu maia"},
+        }[mode]
+        return Brief(idea="o brutarie de cartier cu paine cu maia", mode=mode, **extra)
+
+    def test_rafineaza_fiecare_mod(self):
+        from promptforge.refine import refine
+
+        for mode in ("text", "image", "video", "seo"):
+            with self.subTest(mode=mode):
+                brief = self._brief(mode)
+                local = generate(brief)
+                iesire = refine(brief, local)
+                self.assertTrue(iesire.prompt.strip())
+                self.assertEqual(iesire.mode, mode)
+                self.assertEqual(iesire.word_count, count_words(iesire.prompt))
+                self.assertTrue(iesire.refined_by)
+                self.assertIn(f"MOD: {mode}", self.cereri[-1]["text"])
+                self.assertIn(local.prompt[:40], self.cereri[-1]["text"])
+
+    def test_imaginea_preia_negativul_si_parametrii(self):
+        from promptforge.refine import refine
+
+        brief = self._brief("image")
+        iesire = refine(brief, generate(brief))
+        self.assertIn("blurry", iesire.negative_prompt)
+        self.assertIn("16:9", iesire.parameters)
+
+    def test_cli_refine_pe_fiecare_comanda(self):
+        comenzi = [
+            ["text", "o aplicatie de cheltuieli", "--refine"],
+            ["image", "un far pe stanca", "--refine"],
+            ["video", "un far pe stanca", "--refine", "--duration", "8"],
+            ["seo", "--text", "Paine cu maia coapta in cuptor. " * 15,
+             "--keyword", "paine cu maia", "--refine"],
+        ]
+        for argumente in comenzi:
+            with self.subTest(comanda=argumente[0]):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    cod = _cli_main(argumente)
+                self.assertEqual(cod, 0)
+                self.assertIn("rafinat de", stdout.getvalue())
+
+    def test_modelul_cazut_nu_opreste_livrarea(self):
+        from promptforge.llm import ModelUnavailable
+
+        def cade(**rest):
+            raise ModelUnavailable("fără credențiale")
+
+        self.llm.make_sender = lambda: cade
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            cod = _cli_main(["image", "un far pe stanca", "--refine"])
+        self.assertEqual(cod, 0)
+        self.assertIn("PROMPT", stdout.getvalue().upper())
+        self.assertIn("credențiale", stderr.getvalue())
+
+
+class TestLantSEO(unittest.TestCase):
+    """Modul SEO e la fel de înlănțuibil ca textul; CLI-ul trebuie să-l lase."""
+
+    def setUp(self):
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        os.environ["PROMPTFORGE_HOME"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def _json(self, argumente):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            cod = _cli_main(argumente + ["--json", "--no-save"])
+        self.assertEqual(cod, 0, stdout.getvalue()[:400])
+        return json.loads(stdout.getvalue())
+
+    def test_parts_da_numarul_cerut_de_verigi(self):
+        rezultate = self._json(["seo", "brutarie de cartier", "--parts", "3"])
+        self.assertEqual(len(rezultate), 3)
+
+    def test_peste_plafon_intra_singur_in_lant(self):
+        rezultate = self._json(["seo", "brutarie de cartier", "--max-words", "5000"])
+        self.assertGreater(len(rezultate), 1)
+        for veriga in rezultate:
+            self.assertLessEqual(veriga["word_count"], PROMPT_WORD_CAP)
+        self.assertGreater(sum(v["word_count"] for v in rezultate), 3000)
+
+    def test_parts_sub_unu_e_eroare(self):
+        self.assertEqual(main(["seo", "brutarie", "--parts", "0", "--no-save"]), 2)

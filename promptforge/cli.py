@@ -207,36 +207,28 @@ def _check_parts(parts: int | None) -> str | None:
     return None
 
 
-def _run_generation(args: argparse.Namespace, mode: str) -> int:
-    problema = _check_parts(getattr(args, "parts", None))
-    if problema:
-        print(f"Eroare: {problema}", file=sys.stderr)
-        return 2
+def _produce(
+    args: argparse.Namespace, brief: Brief
+) -> tuple[list[GeneratedPrompt], list[str]]:
+    """Generează rezultatele cerute și, dacă s-a cerut, le trece prin model.
 
-    try:
-        brief = _brief_from_args(args, mode)
-    except ValueError as exc:
-        print(f"Eroare: {exc}", file=sys.stderr)
-        return 2
+    O lucrare care nu încape într-un singur prompt devine lanț, fie pentru că
+    utilizatorul a cerut `--parts`, fie pentru că a cerut mai multe cuvinte
+    decât ține un prompt. Rafinarea eșuată nu oprește livrarea: promptul local
+    pleacă mai departe, cu un avertisment.
 
+    Ridică `ValueError` (inclusiv `ChainError`) pentru comanda apelantă.
+    """
     parts = getattr(args, "parts", None)
-    try:
-        if parts or brief.max_words > PROMPT_WORD_CAP:
-            from .chain import ChainError, build as build_chain
+    if parts or brief.max_words > PROMPT_WORD_CAP:
+        from .chain import build as build_chain
 
-            try:
-                results = build_chain(brief, parts)
-            except ChainError as exc:
-                print(f"Eroare: {exc}", file=sys.stderr)
-                return 2
-        else:
-            results = generate_many(brief, max(1, args.variants))
-    except ValueError as exc:
-        print(f"Eroare: {exc}", file=sys.stderr)
-        return 2
+        results = build_chain(brief, parts)
+    else:
+        results = generate_many(brief, max(1, getattr(args, "variants", 1)))
 
     warnings: list[str] = []
-    if args.refine:
+    if getattr(args, "refine", False):
         from .refine import DEFAULT_MODEL, RefineUnavailable, refine
 
         model = args.model or DEFAULT_MODEL
@@ -248,6 +240,22 @@ def _run_generation(args: argparse.Namespace, mode: str) -> int:
                 warnings.append(f"Rafinarea a eșuat, folosesc promptul local: {exc}")
                 refined.append(result)
         results = refined
+
+    return results, warnings
+
+
+def _run_generation(args: argparse.Namespace, mode: str) -> int:
+    problema = _check_parts(getattr(args, "parts", None))
+    if problema:
+        print(f"Eroare: {problema}", file=sys.stderr)
+        return 2
+
+    try:
+        brief = _brief_from_args(args, mode)
+        results, warnings = _produce(args, brief)
+    except ValueError as exc:
+        print(f"Eroare: {exc}", file=sys.stderr)
+        return 2
 
     code = _deliver(args, results)
 
@@ -543,6 +551,11 @@ def _cmd_seo(args: argparse.Namespace) -> int:
     from .media import MediaError
     from .vision import VisionError
 
+    problema = _check_parts(args.parts)
+    if problema:
+        print(f"Eroare: {problema}", file=sys.stderr)
+        return 2
+
     try:
         source, notes = _read_source(args)
     except MediaError as exc:
@@ -577,13 +590,14 @@ def _cmd_seo(args: argparse.Namespace) -> int:
         "min_words": args.min_words,
         "max_words": args.max_words,
         "seed": args.seed,
+        "strict": args.strict,
     }
     if args.preset:
         options = presets.apply(args.preset, options)
 
     try:
         brief = Brief(idea=subject or source[:120], mode=MODE_SEO, **options)
-        results = generate_many(brief, max(1, args.variants))
+        results, warnings = _produce(args, brief)
     except (ValueError, presets.PresetError) as exc:
         print(f"Eroare: {exc}", file=sys.stderr)
         return 2
@@ -592,6 +606,10 @@ def _cmd_seo(args: argparse.Namespace) -> int:
         result.notes = notes + result.notes
 
     code = _deliver(args, results)
+
+    for warning in warnings:
+        print(f"\nAtenție: {warning}", file=sys.stderr)
+
     if not args.no_save:
         for result in results:
             history_store.save(brief, result)
@@ -1016,7 +1034,15 @@ def build_parser() -> argparse.ArgumentParser:
     seo_parser.add_argument("--min-words", type=int, default=DEFAULT_MIN_WORDS)
     seo_parser.add_argument("--max-words", type=int, default=DEFAULT_MAX_WORDS)
     seo_parser.add_argument("--preset")
-    seo_parser.add_argument("--model", default=None)
+    seo_parser.add_argument("--parts", type=int, metavar="N",
+                            help="împarte lucrarea într-un lanț de N prompturi "
+                                 "care se continuă")
+    seo_parser.add_argument("--strict", action="store_true",
+                            help="fără latitudine: modelul execută litera cererii")
+    seo_parser.add_argument("--refine", action="store_true",
+                            help="rescrie promptul cu un model Claude "
+                                 "(necesită credențiale)")
+    seo_parser.add_argument("--model", default=None, help="modelul folosit la --refine")
     seo_parser.add_argument("--effort", default="high",
                             choices=["low", "medium", "high", "xhigh", "max"])
     seo_parser.add_argument("--out", type=Path)
