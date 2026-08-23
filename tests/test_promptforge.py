@@ -2175,3 +2175,159 @@ class TestLantSEO(unittest.TestCase):
 
     def test_parts_sub_unu_e_eroare(self):
         self.assertEqual(main(["seo", "brutarie", "--parts", "0", "--no-save"]), 2)
+
+
+class TestDurataDinIdee(unittest.TestCase):
+    """O durată scrisă în idee nu are voie să se piardă.
+
+    „un clip de 15 secunde” dădea un prompt cu 8 secunde — durata implicită —
+    care se contrazicea și cu cererea, și cu regula TikTok tipărită alături.
+    """
+
+    @staticmethod
+    def _durata(idea):
+        from promptforge.auto import _pick_duration
+        from promptforge.vocab import normalize
+
+        return _pick_duration(normalize(idea))[0]
+
+    def test_citeste_secundele(self):
+        self.assertEqual(self._durata("un clip de 15 secunde pentru TikTok"), 15)
+        self.assertEqual(self._durata("o reclama de 30 de secunde la cafea"), 30)
+        self.assertEqual(self._durata("un clip de 5 sec"), 5)
+        self.assertEqual(self._durata("a 30-second spot for coffee"), 30)
+
+    def test_citeste_minutele(self):
+        self.assertEqual(self._durata("un video de doua minute despre brutarie"), 120)
+        self.assertEqual(self._durata("un clip de un minut"), 60)
+
+    def test_ignora_ce_nu_e_durata(self):
+        self.assertEqual(self._durata("un clip scurt cu o pisica"), 0)
+        self.assertEqual(self._durata("un clip cu 15 cadre"), 0)
+        self.assertEqual(self._durata("un clip de 900 de secunde"), 0, "peste limită")
+
+    def test_decizia_pune_durata_in_optiuni(self):
+        decision = decide("un clip de 15 secunde pentru TikTok cu produsul nostru")
+        self.assertEqual(decision.options["mode"], "video")
+        self.assertEqual(decision.options["duration"], 15)
+        self.assertIn("15 secunde", decision.explain())
+
+    def test_durata_data_de_utilizator_ramane(self):
+        decision = decide("un clip de 15 secunde pentru TikTok", {"duration": 22})
+        self.assertEqual(decision.options["duration"], 22)
+
+    def test_promptul_generat_arata_durata_ceruta(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            cod = _cli_main(["un clip de 15 secunde pentru TikTok cu produsul nostru",
+                             "--no-save"])
+        text = stdout.getvalue()
+        self.assertEqual(cod, 0)
+        self.assertIn("Duration: 15s", text)
+        self.assertNotIn("8 seconds", text)
+
+    def test_doar_la_video(self):
+        # „în 3 secunde” într-o cerere de text nu e durata unui clip.
+        decision = decide("o aplicatie care se incarca in 3 secunde")
+        self.assertNotEqual(decision.options["mode"], "video")
+        self.assertNotIn("duration", decision.options)
+
+
+class TestSemnaleleDeVideo(unittest.TestCase):
+    """„secunde” singur nu face un video, iar „cadru” cu atât mai puțin."""
+
+    def test_performanta_nu_e_durata_unui_clip(self):
+        for idea in ("o aplicatie care se incarca in 3 secunde",
+                     "o pagina web care raspunde in 2 secunde",
+                     "un raport livrat in cateva secunde"):
+            with self.subTest(idea=idea):
+                self.assertEqual(decide(idea).options["mode"], "text")
+
+    def test_cadru_nu_mai_decide_singur(self):
+        self.assertEqual(decide("un cadru legal pentru contracte de munca")
+                         .options["mode"], "text")
+
+    def test_secundele_cerute_raman_un_semnal_de_video(self):
+        for idea in ("fa-mi ceva de 20 de secunde despre cafea",
+                     "un spot de 30 de secunde la cafea"):
+            with self.subTest(idea=idea):
+                self.assertEqual(decide(idea).options["mode"], "video")
+
+    def test_semnalele_clare_merg_mai_departe(self):
+        for idea, cuvant in (("un clip pentru TikTok", "clip"),
+                             ("o filmare la nunta", "filmare"),
+                             ("un trailer pentru joc", "trailer"),
+                             ("un reel cu produsul", "reel")):
+            with self.subTest(cuvant=cuvant):
+                decision = decide(idea)
+                self.assertEqual(decision.options["mode"], "video")
+                self.assertIn(cuvant, decision.explain())
+
+
+class TestMotiveleAutomatului(unittest.TestCase):
+    def test_motivele_sunt_despartite(self):
+        # Lipite cu spațiu, se citeau ca o singură frază fără cap și coadă.
+        decision = decide("un clip de 15 secunde pentru TikTok cu produsul nostru")
+        self.assertGreater(len(decision.reasons), 1)
+        self.assertIn("; ", decision.explain())
+        for motiv in decision.reasons:
+            self.assertIn(motiv, decision.explain())
+
+
+class TestAutomatInInterfataWeb(unittest.TestCase):
+    """Formularul trimite câmpurile goale ca 0 sau ""; automatul trebuie să le umple."""
+
+    @classmethod
+    def setUpClass(cls):
+        from http.server import ThreadingHTTPServer
+
+        from promptforge.web import Handler
+
+        cls._home = os.environ.get("PROMPTFORGE_HOME")
+        os.environ["PROMPTFORGE_HOME"] = tempfile.mkdtemp()
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+        if cls._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = cls._home
+
+    SABLON = {"idea": "", "mode": "auto", "domain": "", "target": "", "platform": "",
+              "tone": "", "style": "", "aspect": "", "audience": "", "subject": "",
+              "duration": 0, "lang": "", "must": [], "avoid": [], "variants": 1,
+              "seed": 0, "min_words": 300, "max_words": 500, "parts": 0}
+
+    def _cere(self, **schimbari):
+        import urllib.request
+
+        payload = {**self.SABLON, **schimbari}
+        request = urllib.request.Request(
+            self.base + "/api/generate",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)["results"][0]
+
+    def test_umple_durata_desi_campul_e_zero(self):
+        result = self._cere(idea="un clip de 15 secunde pentru TikTok cu produsul nostru")
+        self.assertEqual(result["mode"], "video")
+        self.assertIn("Duration: 15s", result["parameters"])
+
+    def test_nu_calca_peste_ce_a_ales_utilizatorul(self):
+        result = self._cere(idea="un clip pentru TikTok", duration=22)
+        self.assertIn("22s", result["parameters"])
+
+    def test_spune_ce_a_ales(self):
+        result = self._cere(idea="un clip de 15 secunde pentru TikTok")
+        nota = [n for n in result["notes"] if n.startswith("Alegeri automate")]
+        self.assertTrue(nota)
+        self.assertIn("; ", nota[0])

@@ -30,8 +30,18 @@ from .vocab import normalize
 # video sunt mai specifice decât imaginea, iar imaginea decât textul.
 _VIDEO_HINTS = (
     "video", "clip", "filmare", "filmulet", "reel", "shorts", "spot", "reclama tv",
-    "animatie", "secunde", "cadru", "montaj", "trailer", "storyboard", "footage",
+    "animatie", "montaj", "trailer", "storyboard", "footage",
 )
+# „secunde” singur nu e un semnal de video: o aplicație care se încarcă „în 3
+# secunde” e tot software. Diferența o face prepoziția — un clip e *de* atâtea
+# secunde, o performanță se măsoară *în* atâtea. La fel, „cadru” e mai des
+# „cadru legal” decât un cadru de film, așa că nu mai decide singur.
+_PERFORMANCE = re.compile(
+    r"(?<![a-z0-9])(?:in|sub|peste|dupa|within|under|in less than)\s+"
+    r"(?:\d+|o|un|doua|cateva)\s*(?:de\s+)?(?:secunde|secunda|seconds|second|sec)"
+    r"(?![a-z])"
+)
+_VIDEO_WEAK = ("secunde", "secunda", "seconds")
 _SEO_HINTS = (
     "seo", "google", "cautare", "motor de cautare", "keyword", "cuvant cheie",
     "cuvinte cheie", "meta description", "title tag", "ranking", "pozitionare",
@@ -72,7 +82,39 @@ class Decision:
     variants: int = 1
 
     def explain(self) -> str:
-        return " ".join(self.reasons)
+        return "; ".join(self.reasons)
+
+
+# „un clip de 15 secunde”, „30-second spot”, „două minute”. Fără asta, o durată
+# scrisă în idee se pierdea, iar promptul ieșea cu durata implicită — contrazicând
+# atât cererea, cât și regula platformei tipărită în același prompt.
+_DURATION_UNITS = (
+    (r"(?:secunde|secunda|seconds|second|sec|s)", 1),
+    (r"(?:minute|minut|minutes|minu?)", 60),
+)
+_SPELLED = {
+    "o": 1, "un": 1, "una": 1, "doua": 2, "doi": 2, "trei": 3, "patru": 4,
+    "cinci": 5, "sase": 6, "sapte": 7, "opt": 8, "noua": 9, "zece": 10,
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "ten": 10,
+}
+_MAX_DURATION = 600      # peste zece minute nu mai e un clip, e altă lucrare
+
+
+def _pick_duration(haystack: str) -> tuple[int, str]:
+    """Scoate durata cerută în text, în secunde. (0, "") dacă nu scrie nicăieri."""
+    numar = "|".join(sorted(_SPELLED, key=len, reverse=True))
+    for unit, factor in _DURATION_UNITS:
+        pattern = rf"(?<![a-z0-9])(\d+|{numar})[\s-]*(?:de\s+)?{unit}(?![a-z])"
+        match = re.search(pattern, haystack)
+        if not match:
+            continue
+        brut = match.group(1)
+        cantitate = int(brut) if brut.isdigit() else _SPELLED[brut]
+        secunde = cantitate * factor
+        if 1 <= secunde <= _MAX_DURATION:
+            scris = "secunde" if factor == 1 else "minute"
+            return secunde, f"durata {secunde}s, fiindcă ai scris „{cantitate} {scris}”"
+    return 0, ""
 
 
 def _has(haystack: str, needles: tuple[str, ...]) -> str | None:
@@ -90,6 +132,9 @@ def _pick_mode(haystack: str) -> tuple[str, str]:
     hit = _has(haystack, _VIDEO_HINTS)
     if hit:
         return MODE_VIDEO, f"mod video, fiindcă ai scris „{hit}”"
+    hit = _has(haystack, _VIDEO_WEAK)
+    if hit and not _PERFORMANCE.search(haystack):
+        return MODE_VIDEO, f"mod video, fiindcă ai cerut ceva de atâtea „{hit}”"
     hit = _has(haystack, _IMAGE_HINTS)
     if hit:
         return MODE_IMAGE, f"mod imagine, fiindcă ai scris „{hit}”"
@@ -156,6 +201,12 @@ def decide(idea: str, given: dict[str, object] | None = None) -> Decision:
                 chosen["intent"] = intent
                 decision.reasons.append(f"intenție {intent}, din felul în care e formulată cererea")
                 break
+
+    if mode == MODE_VIDEO and "duration" not in fixed:
+        duration, why = _pick_duration(haystack)
+        if duration:
+            chosen["duration"] = duration
+            decision.reasons.append(why)
 
     if "min_words" not in fixed and "max_words" not in fixed:
         low, high, why = _pick_length(haystack, str(mode))

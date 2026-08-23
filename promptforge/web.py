@@ -799,9 +799,18 @@ class Handler(BaseHTTPRequestHandler):
             if payload.get("mode") == "auto":
                 from .auto import decide
 
-                decision = decide(str(payload.get("idea") or ""))
+                # Formularul trimite toate câmpurile, golul ca 0 sau "".
+                # `setdefault` singur ar fi văzut un câmp gol drept alegere a
+                # utilizatorului și ar fi aruncat decizia automatului.
+                # „mode” e chiar „auto”, deci nu e o alegere de păstrat.
+                ales = {
+                    key: value for key, value in payload.items()
+                    if key != "mode" and value not in (None, "", [], 0)
+                }
+                decision = decide(str(payload.get("idea") or ""), ales)
                 for key, value in decision.options.items():
-                    payload.setdefault(key, value)
+                    if payload.get(key) in (None, "", [], 0):
+                        payload[key] = value
                 payload["mode"] = decision.options["mode"]
                 variants = decision.variants
                 notes.append(f"Alegeri automate: {decision.explain()}")
