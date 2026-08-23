@@ -13,7 +13,15 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import generate_many
-from .catalog import MODELS, PLATFORMS, PRICING_DISCLAIMER, SIZES, parse_size
+from .catalog import (
+    MODELS,
+    PLATFORMS,
+    PRICING_DISCLAIMER,
+    SIZES,
+    check_text,
+    known_fields,
+    parse_size,
+)
 from .media import ImageRef, MediaError, SUPPORTED_TYPES
 from .models import (
     Brief,
@@ -21,9 +29,11 @@ from .models import (
     DEFAULT_MIN_WORDS,
     MAX_ALLOWED_WORDS,
     MODE_IMAGE,
+    MODE_SEO,
     MODE_TEXT,
     MODE_VIDEO,
 )
+from .seo import CONTENT_TYPES as SEO_TYPES, INTENTS as SEO_INTENTS
 from .targets import IMAGE_TARGETS, TEXT_TARGETS, VIDEO_TARGETS
 from .vocab import IMAGE_DOMAINS, TEXT_DOMAINS, TONES, VIDEO_DOMAINS
 
@@ -97,6 +107,13 @@ PAGE = """<!doctype html>
   .thumbs figure { margin: 0; text-align: center; font-size: .75rem; color: var(--muted); }
   .thumbs img { width: 86px; height: 86px; object-fit: cover; border-radius: 8px;
                 border: 1px solid var(--line); display: block; }
+  .check-row { display: flex; gap: .6rem; align-items: baseline; font-size: .9rem;
+               padding: .35rem 0; border-bottom: 1px solid var(--line); }
+  .check-row .name { flex: 1; }
+  .check-row .len { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .check-ok { color: #2d7a4f; }
+  .check-warn { color: #b07d16; }
+  .check-bad { color: #c0392b; }
   .thumbs button { margin: .2rem 0 0; padding: .1rem .45rem; font-size: .72rem;
                    background: transparent; color: var(--muted); border: 1px solid var(--line); }
 </style>
@@ -111,7 +128,13 @@ PAGE = """<!doctype html>
       <button type="button" id="mode-text" aria-pressed="true">Text</button>
       <button type="button" id="mode-image" aria-pressed="false">Imagine</button>
       <button type="button" id="mode-video" aria-pressed="false">Video</button>
+      <button type="button" id="mode-seo" aria-pressed="false">SEO</button>
       <button type="button" id="mode-vision" aria-pressed="false">Din poze</button>
+    </div>
+
+    <div class="seo-only" hidden>
+      <label for="source">Conținutul de optimizat (text, descriere de produs, articol)</label>
+      <textarea id="source" placeholder="Lipește aici textul. Cuvintele-cheie se extrag din el."></textarea>
     </div>
 
     <div class="vision-only" hidden>
@@ -172,6 +195,18 @@ PAGE = """<!doctype html>
         <label for="duration">Durată (secunde)</label>
         <input id="duration" type="number" min="2" max="60" placeholder="8">
       </div>
+      <div class="seo-only" hidden>
+        <label for="seotype">Tip de pagină</label>
+        <select id="seotype"></select>
+      </div>
+      <div class="seo-only" hidden>
+        <label for="keyword">Cuvânt-cheie</label>
+        <input id="keyword" placeholder="se extrage din conținut">
+      </div>
+      <div class="seo-only" hidden>
+        <label for="intent">Intenția de căutare</label>
+        <select id="intent"></select>
+      </div>
       <div>
         <label for="minw">Minim cuvinte</label>
         <input id="minw" type="number" value="__MIN__">
@@ -196,6 +231,26 @@ PAGE = """<!doctype html>
   </div>
 
   <div id="out"></div>
+
+  <div class="card" style="margin-top:2rem">
+    <h2 style="font-size:1.05rem;margin:0 0 .3rem">Verifică lungimile</h2>
+    <p class="pricing" style="margin:0 0 .9rem">
+      Lipește textul primit înapoi de la model, sub forma <code>TITLU: …</code> pe rânduri,
+      și îți spune ce depășește limitele platformei.
+    </p>
+    <div class="grid" style="margin-top:0">
+      <div>
+        <label for="check-platform">Platformă</label>
+        <select id="check-platform"></select>
+      </div>
+    </div>
+    <div class="row">
+      <label for="check-text">Text de verificat</label>
+      <textarea id="check-text" placeholder="TITLU: ...&#10;DESCRIERE: ...&#10;META: ..."></textarea>
+    </div>
+    <button id="check-go">Verifică</button>
+    <div id="check-out"></div>
+  </div>
 </main>
 
 <script>
@@ -232,21 +287,26 @@ function showPricing() {
   $("pricing").textContent = (option && option.dataset.note) || "";
 }
 
-const MODES = ["text", "image", "video", "vision"];
+const MODES = ["text", "image", "video", "seo", "vision"];
 
 function applyMode() {
   for (const name of MODES) {
     $("mode-" + name).setAttribute("aria-pressed", mode === name);
   }
   document.querySelectorAll(".text-only").forEach(el => el.hidden = mode !== "text");
-  document.querySelectorAll(".image-only").forEach(el => el.hidden = mode === "text" || mode === "video");
+  document.querySelectorAll(".image-only").forEach(
+    el => el.hidden = mode === "text" || mode === "video" || mode === "seo");
   document.querySelectorAll(".video-only").forEach(el => el.hidden = mode !== "video");
+  document.querySelectorAll(".seo-only").forEach(el => el.hidden = mode !== "seo");
   document.querySelectorAll(".vision-only").forEach(el => el.hidden = mode !== "vision");
-  $("idea-label").textContent = mode === "vision"
-    ? "Ce vrei să obții din poze (ex: ia lumina din imaginea 1 și pune-o peste subiectul din imaginea 2)"
-    : "Ideea ta";
-  $("domain").parentElement.hidden = mode === "vision";
-  const key = mode === "vision" ? "image" : mode;
+  $("idea-label").textContent =
+    mode === "vision"
+      ? "Ce vrei să obții din poze (ex: ia lumina din imaginea 1 și pune-o peste subiectul din imaginea 2)"
+      : mode === "seo"
+        ? "Subiectul paginii (opțional, dacă ai lipit conținut mai sus)"
+        : "Ideea ta";
+  $("domain").parentElement.hidden = mode === "vision" || mode === "seo";
+  const key = mode === "vision" ? "image" : (mode === "seo" ? "text" : mode);
   fillSelect($("target"), CONFIG.targets[key], "implicit");
   fillSelect($("domain"), CONFIG.domains[key], "detectare automată");
   showPricing();
@@ -331,6 +391,9 @@ document.addEventListener("paste", (event) => {
 
 fillSelect($("tone"), CONFIG.tones, "implicit");
 fillSelect($("platform"), CONFIG.platforms, "niciuna");
+fillSelect($("seotype"), CONFIG.seoTypes, "");
+fillSelect($("intent"), CONFIG.seoIntents, "");
+fillSelect($("check-platform"), CONFIG.platforms.filter(p => p.hasFields), "");
 for (const name of CONFIG.sizes) {
   const option = document.createElement("option");
   option.value = name;
@@ -349,7 +412,7 @@ function escapeHtml(text) {
 $("go").onclick = async () => {
   const idea = $("idea").value.trim();
   const out = $("out");
-  if (!idea && mode !== "vision") {
+  if (!idea && mode !== "vision" && mode !== "seo") {
     out.innerHTML = '<p class="err">Scrie mai întâi o idee.</p>';
     return;
   }
@@ -373,7 +436,19 @@ $("go").onclick = async () => {
     platform: $("platform").value || null,
     size: mode !== "text" ? ($("size").value.trim() || null) : null,
     duration: mode === "video" ? (parseInt($("duration").value, 10) || 0) : 0,
+    source_text: mode === "seo" ? $("source").value.trim() : "",
+    keyword: mode === "seo" ? $("keyword").value.trim() : "",
+    intent: mode === "seo" ? ($("intent").value || "") : "",
   };
+
+  if (mode === "seo") {
+    body.domain = $("seotype").value || null;
+    if (!body.source_text && !idea) {
+      out.innerHTML = '<p class="err">Lipește conținutul de optimizat sau scrie subiectul paginii.</p>';
+      $("go").disabled = false;
+      return;
+    }
+  }
 
   if (mode === "vision") {
     body.images = picked;
@@ -412,6 +487,35 @@ $("go").onclick = async () => {
   }
 };
 
+$("check-go").onclick = async () => {
+  const out = $("check-out");
+  const text = $("check-text").value.trim();
+  if (!text) { out.innerHTML = '<p class="err">Nu ai scris nimic de verificat.</p>'; return; }
+  $("check-go").disabled = true;
+  try {
+    const response = await fetch("/api/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: $("check-platform").value, text }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      out.innerHTML = '<p class="err">' + escapeHtml(data.error) + "</p>";
+      return;
+    }
+    const css = { ok: "check-ok", atentie: "check-warn", depasit: "check-bad", gol: "" };
+    out.innerHTML = '<div style="margin-top:1rem">' + data.rows.map(row =>
+      '<div class="check-row"><span class="name">' + escapeHtml(row.label) +
+      '</span><span class="len">' + row.length + '</span><span class="' +
+      (css[row.verdict] || "") + '">' + escapeHtml(row.explanation) + "</span></div>"
+    ).join("") + "</div>";
+  } catch (err) {
+    out.innerHTML = '<p class="err">' + escapeHtml(String(err)) + "</p>";
+  } finally {
+    $("check-go").disabled = false;
+  }
+};
+
 function render(r) {
   let html = '<div class="result"><div class="meta">Varianta ' + r.variant +
              ' · domeniu: ' + escapeHtml(r.domain) + ' · țintă: ' + escapeHtml(r.target) +
@@ -440,7 +544,7 @@ def _brief_from_payload(payload: dict, mode: str | None = None) -> Brief:
         width, height = parse_size(str(payload["size"]))
 
     return Brief(
-        idea=payload.get("idea", ""),
+        idea=payload.get("idea") or str(payload.get("source_text") or "")[:120] or "",
         mode=mode or payload.get("mode", MODE_TEXT),
         domain=payload.get("domain") or None,
         target=payload.get("target") or None,
@@ -452,6 +556,9 @@ def _brief_from_payload(payload: dict, mode: str | None = None) -> Brief:
         width=width,
         height=height,
         duration=int(payload.get("duration") or 0),
+        source_text=str(payload.get("source_text") or ""),
+        keyword=str(payload.get("keyword") or ""),
+        intent=str(payload.get("intent") or ""),
         must=list(payload.get("must") or []),
         avoid=list(payload.get("avoid") or []),
         min_words=int(payload.get("min_words") or DEFAULT_MIN_WORDS),
@@ -502,14 +609,24 @@ def _page() -> bytes:
             MODE_TEXT: with_pricing(list(TEXT_TARGETS), "text"),
             MODE_IMAGE: with_pricing(list(IMAGE_TARGETS), "image"),
             MODE_VIDEO: with_pricing(list(VIDEO_TARGETS), "video"),
+            MODE_SEO: with_pricing(list(TEXT_TARGETS), "text"),
         },
         "domains": {
             MODE_TEXT: sorted(TEXT_DOMAINS),
             MODE_IMAGE: sorted(IMAGE_DOMAINS),
             MODE_VIDEO: sorted(VIDEO_DOMAINS),
+            MODE_SEO: sorted(SEO_TYPES),
         },
         "tones": sorted(TONES),
-        "platforms": [{"key": k, "label": v.label} for k, v in sorted(PLATFORMS.items())],
+        "platforms": [
+            {"key": key, "label": entry.label, "hasFields": bool(entry.fields)}
+            for key, entry in sorted(PLATFORMS.items())
+        ],
+        "seoTypes": [
+            {"key": key, "label": spec["label"]["ro"]}
+            for key, spec in sorted(SEO_TYPES.items())
+        ],
+        "seoIntents": [{"key": key, "label": key} for key in sorted(SEO_INTENTS)],
         "sizes": sorted(SIZES),
         "maxWords": MAX_ALLOWED_WORDS,
         "pricingDisclaimer": PRICING_DISCLAIMER,
@@ -557,7 +674,45 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "JSON invalid"})
             return None
 
+    def _handle_check(self) -> None:
+        """Verifică lungimile unui text față de limitele platformei."""
+        from .cli import _parse_fields
+
+        payload = self._read_payload(MAX_JSON_BYTES)
+        if payload is None:
+            return
+
+        platform = str(payload.get("platform") or "")
+        if not known_fields(platform):
+            self._send_json(400, {"error": f"Platforma {platform!r} nu are limite definite."})
+            return
+
+        values = _parse_fields(str(payload.get("text") or ""))
+        if not values:
+            self._send_json(400, {
+                "error": "Nu am găsit câmpuri etichetate. Scrie „TITLU: …” pe rânduri. "
+                         f"Câmpuri cunoscute: {', '.join(known_fields(platform))}.",
+            })
+            return
+
+        rows = check_text(platform, values)
+        if not rows:
+            self._send_json(400, {
+                "error": f"Niciun câmp recunoscut pentru {platform}. "
+                         f"Cunoscute: {', '.join(known_fields(platform))}.",
+            })
+            return
+
+        self._send_json(200, {"rows": [
+            {"field": key, "verdict": verdict, "length": length,
+             "explanation": explanation, "label": label}
+            for key, verdict, length, explanation, label in rows
+        ]})
+
     def do_POST(self) -> None:  # noqa: N802 - semnătură impusă
+        if self.path == "/api/check":
+            self._handle_check()
+            return
         if self.path == "/api/vision":
             self._handle_vision()
             return

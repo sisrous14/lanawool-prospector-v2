@@ -168,6 +168,39 @@ class Platform:
     alt_sizes: dict[str, tuple[int, int]] = field(default_factory=dict)
     rules: dict[str, dict[str, list[str]]] = field(default_factory=dict)
     limits: dict[str, str] = field(default_factory=dict)
+    fields: dict[str, FieldLimit] = field(default_factory=dict)
+
+
+@dataclass
+class FieldLimit:
+    """O limită de caractere care poate fi verificată, nu doar enunțată."""
+
+    label: str
+    maximum: int
+    recommended: int = 0      # 0 = nu există prag recomandat separat
+    note: str = ""
+
+    def check(self, text: str) -> tuple[str, int, str]:
+        """Întoarce (verdict, lungime, explicație)."""
+        length = len(text.strip())
+        if length > self.maximum:
+            return "depasit", length, f"cu {length - self.maximum} caractere peste limita de {self.maximum}"
+        if self.recommended and length > self.recommended:
+            return "atentie", length, f"peste pragul recomandat de {self.recommended} (limita dură: {self.maximum})"
+        if length == 0:
+            return "gol", 0, "câmpul e gol"
+        return "ok", length, f"din {self.maximum}"
+
+
+FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "titlu": ("titlu", "title", "headline", "h1", "titlul"),
+    "descriere": ("descriere", "description", "desc", "descrierea"),
+    "meta": ("meta", "meta description", "meta-descriere", "metadescriere"),
+    "legenda": ("legenda", "caption", "text", "postare", "post"),
+    "hashtaguri": ("hashtaguri", "hashtags", "taguri", "tags"),
+    "alt": ("alt", "alt text", "text alternativ", "alt-text"),
+    "slug": ("slug", "url"),
+}
 
 
 PLATFORMS: dict[str, Platform] = {
@@ -177,6 +210,11 @@ PLATFORMS: dict[str, Platform] = {
         limits={
             "ro": "Descriere: până la 2200 de caractere, dar primele 60 sunt singurele vizibile fără atingere.",
             "en": "Caption: up to 2200 characters, but only the first 60 are visible without a tap.",
+        },
+        fields={
+            "legenda": FieldLimit("Descrierea postării", 2200, 150,
+                                  "doar primele ~60 de caractere se văd fără atingere"),
+            "hashtaguri": FieldLimit("Hashtaguri", 100, 60, "trei-cinci hashtaguri, unul de nișă"),
         },
         rules={
             "text": {
@@ -228,6 +266,12 @@ PLATFORMS: dict[str, Platform] = {
             "ro": "Legendă: până la 2200 de caractere; primele 125 apar înainte de „mai mult”.",
             "en": "Caption: up to 2200 characters; the first 125 show before the `more` link.",
         },
+        fields={
+            "legenda": FieldLimit("Legenda", 2200, 125,
+                                  "primele 125 de caractere apar înainte de „mai mult”"),
+            "alt": FieldLimit("Text alternativ", 100, 0, "descriptiv, nu umplut cu cuvinte-cheie"),
+            "hashtaguri": FieldLimit("Hashtaguri", 200, 120, "cinci-zece, la final sau în primul comentariu"),
+        },
         rules={
             "text": {
                 "ro": [
@@ -274,6 +318,12 @@ PLATFORMS: dict[str, Platform] = {
             "ro": "Textul reclamei: 125 de caractere recomandate; titlu 40; descriere 30.",
             "en": "Ad copy: 125 characters recommended; headline 40; description 30.",
         },
+        fields={
+            "titlu": FieldLimit("Titlul reclamei", 40, 0, "scrie beneficiul, nu numele produsului"),
+            "descriere": FieldLimit("Descrierea linkului", 30, 0, "se taie brutal pe mobil"),
+            "legenda": FieldLimit("Textul principal", 2000, 125,
+                                  "primele 125 de caractere sunt singurele garantate vizibile"),
+        },
         rules={
             "text": {
                 "ro": [
@@ -319,6 +369,12 @@ PLATFORMS: dict[str, Platform] = {
         limits={
             "ro": "Ads: titlu 30 de caractere, descriere 90. SEO: title 60, meta description 155.",
             "en": "Ads: headline 30 characters, description 90. SEO: title 60, meta description 155.",
+        },
+        fields={
+            "titlu": FieldLimit("Titlu de anunț", 30, 0, "limită dură; anunțul e respins peste ea"),
+            "descriere": FieldLimit("Descriere de anunț", 90, 0, "limită dură"),
+            "meta": FieldLimit("Meta description", 160, 155, "peste 155 se taie în rezultate"),
+            "slug": FieldLimit("Slug de URL", 75, 60, "scurt, cu cuvântul-cheie, fără cuvinte de umplutură"),
         },
         rules={
             "text": {
@@ -368,6 +424,11 @@ PLATFORMS: dict[str, Platform] = {
             "ro": "Titlu: 60 de caractere vizibile; descriere: primele 150 apar în rezultate.",
             "en": "Title: 60 visible characters; description: the first 150 show in results.",
         },
+        fields={
+            "titlu": FieldLimit("Titlu", 100, 60, "peste 60 se taie în rezultate"),
+            "descriere": FieldLimit("Descriere", 5000, 150,
+                                    "primele 150 de caractere apar în căutare"),
+        },
         rules={
             "text": {
                 "ro": [
@@ -410,6 +471,10 @@ PLATFORMS: dict[str, Platform] = {
             "ro": "Postare: 3000 de caractere; primele 210 apar înainte de „vezi mai mult”.",
             "en": "Post: 3000 characters; the first 210 show before `see more`.",
         },
+        fields={
+            "legenda": FieldLimit("Postare", 3000, 210,
+                                  "primele 210 caractere apar înainte de „vezi mai mult”"),
+        },
         rules={
             "text": {
                 "ro": [
@@ -446,6 +511,9 @@ PLATFORMS: dict[str, Platform] = {
         limits={
             "ro": "Postare: 280 de caractere fără abonament.",
             "en": "Post: 280 characters without a subscription.",
+        },
+        fields={
+            "legenda": FieldLimit("Postare", 280, 0, "limită dură fără abonament"),
         },
         rules={
             "text": {
@@ -561,3 +629,31 @@ def aspect_of(width: int, height: int) -> str:
 def describe_size(width: int, height: int) -> str:
     megapixels = width * height / 1_000_000
     return f"{width}×{height} px ({aspect_of(width, height)}, {megapixels:.1f} MP)"
+
+
+def check_text(platform: str, values: dict[str, str]) -> list[tuple[str, str, int, str, str]]:
+    """Verifică lungimile față de limitele platformei.
+
+    `values` e o hartă câmp -> text. Întoarce, pentru fiecare câmp cunoscut,
+    (cheie, verdict, lungime, explicație, eticheta afișabilă). Câmpurile pe care
+    platforma nu le are sunt ignorate — nu inventăm limite.
+    """
+    entry = PLATFORMS.get(platform)
+    if entry is None:
+        raise ValueError(
+            f"Platformă necunoscută: {platform!r}. Disponibile: {', '.join(sorted(PLATFORMS))}"
+        )
+
+    rows = []
+    for key, text in values.items():
+        limit = entry.fields.get(key)
+        if limit is None:
+            continue
+        verdict, length, explanation = limit.check(text)
+        rows.append((key, verdict, length, explanation, limit.label))
+    return rows
+
+
+def known_fields(platform: str) -> dict[str, FieldLimit]:
+    entry = PLATFORMS.get(platform)
+    return dict(entry.fields) if entry else {}

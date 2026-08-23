@@ -10,7 +10,7 @@ Utilizare de bibliotecă:
 
 from __future__ import annotations
 
-from . import image_engine, text_engine, video_engine
+from . import image_engine, seo_engine, text_engine, video_engine
 from .models import (
     Brief,
     DEFAULT_MAX_WORDS,
@@ -18,10 +18,11 @@ from .models import (
     GeneratedPrompt,
     MODE_IMAGE,
     MODE_TEXT,
+    MODE_SEO,
     MODE_VIDEO,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 
 def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
@@ -30,6 +31,8 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
         return image_engine.generate(brief, variant)
     if brief.mode == MODE_VIDEO:
         return video_engine.generate(brief, variant)
+    if brief.mode == MODE_SEO:
+        return seo_engine.generate(brief, variant)
     return text_engine.generate(brief, variant)
 
 
@@ -52,6 +55,7 @@ __all__ = [
     "MODE_TEXT",
     "MODE_IMAGE",
     "MODE_VIDEO",
+    "MODE_SEO",
     "DEFAULT_MIN_WORDS",
     "DEFAULT_MAX_WORDS",
     "__version__",

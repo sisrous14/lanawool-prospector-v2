@@ -8,17 +8,28 @@ import sys
 from pathlib import Path
 
 from . import __version__, feedback, generate_many, presets
-from .catalog import MODELS, PLATFORMS, PRICING_DISCLAIMER, SIZES, parse_size
+from .catalog import (
+    FIELD_ALIASES,
+    MODELS,
+    PLATFORMS,
+    PRICING_DISCLAIMER,
+    SIZES,
+    check_text,
+    known_fields,
+    parse_size,
+)
 from .models import (
     Brief,
     DEFAULT_MAX_WORDS,
     DEFAULT_MIN_WORDS,
     GeneratedPrompt,
     MODE_IMAGE,
+    MODE_SEO,
     MODE_TEXT,
     MODE_VIDEO,
 )
 from .targets import IMAGE_TARGETS, TEXT_TARGETS, VIDEO_TARGETS
+from .seo import CONTENT_TYPES as SEO_TYPES, INTENTS as SEO_INTENTS
 from .vocab import IMAGE_DOMAINS, TEXT_DOMAINS, TONES, VIDEO_DOMAINS
 from . import history as history_store
 
@@ -43,6 +54,10 @@ def _add_common(parser: argparse.ArgumentParser, mode: str) -> None:
     parser.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--out", type=Path, help="scrie rezultatul într-un fișier")
     parser.add_argument("--json", action="store_true", dest="as_json", help="ieșire JSON")
+    parser.add_argument("--export", type=Path, metavar="FIȘIER",
+                        help="scrie în .csv, .json, .md sau .txt (formatul din extensie)")
+    parser.add_argument("--explain", action="store_true",
+                        help="explică la final ce face fiecare secțiune")
     parser.add_argument("--no-save", action="store_true", help="nu salva în istoric")
     parser.add_argument("--preset", help="profil salvat cu `promptforge preset salveaza`")
     parser.add_argument("--platform", choices=sorted(PLATFORMS),
@@ -117,6 +132,48 @@ def _brief_from_args(args: argparse.Namespace, mode: str) -> Brief:
     return Brief(idea=idea, mode=mode, subject=subject, **options)
 
 
+def _explanations(result: GeneratedPrompt) -> str:
+    from .explain import explain
+
+    rows = explain(result.prompt, result.mode)
+    if not rows:
+        return ""
+    lines = ["", RULE, "CE FACE FIECARE SECȚIUNE", RULE]
+    for title, why in rows:
+        lines.append(f"\n{title}\n  {why}")
+    return "\n".join(lines)
+
+
+def _deliver(args: argparse.Namespace, results: list[GeneratedPrompt]) -> int:
+    """Scrie rezultatele acolo unde a cerut utilizatorul."""
+    from .export import write
+
+    if args.as_json:
+        output = json.dumps([r.to_dict() for r in results], ensure_ascii=False, indent=2)
+    else:
+        output = "\n\n".join(_render_result(r, len(results)) for r in results)
+        if getattr(args, "explain", False):
+            output += "\n" + "\n".join(_explanations(r) for r in results)
+
+    exported = getattr(args, "export", None)
+    if exported:
+        try:
+            fmt = write(results, exported)
+        except ValueError as exc:
+            print(f"Eroare: {exc}", file=sys.stderr)
+            return 2
+        print(f"Exportat {len(results)} rezultate în {exported} (format {fmt}).")
+        return 0
+
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(output + "\n", encoding="utf-8")
+        print(f"Scris în {args.out}")
+    else:
+        print(output)
+    return 0
+
+
 def _render_result(result: GeneratedPrompt, total: int) -> str:
     header = f"VARIANTA {result.variant}/{total}" if total > 1 else "PROMPT"
     meta = (
@@ -163,18 +220,7 @@ def _run_generation(args: argparse.Namespace, mode: str) -> int:
                 refined.append(result)
         results = refined
 
-    if args.as_json:
-        payload = json.dumps([r.to_dict() for r in results], ensure_ascii=False, indent=2)
-        output = payload
-    else:
-        output = "\n\n".join(_render_result(r, len(results)) for r in results)
-
-    if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(output + "\n", encoding="utf-8")
-        print(f"Scris în {args.out}")
-    else:
-        print(output)
+    code = _deliver(args, results)
 
     for warning in warnings:
         print(f"\nAtenție: {warning}", file=sys.stderr)
@@ -183,7 +229,7 @@ def _run_generation(args: argparse.Namespace, mode: str) -> int:
         for result in results:
             history_store.save(brief, result)
 
-    return 0
+    return code
 
 
 def _add_source_options(parser: argparse.ArgumentParser) -> None:
@@ -205,6 +251,8 @@ def _add_source_options(parser: argparse.ArgumentParser) -> None:
                         choices=["low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--out", type=Path)
     parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument("--export", type=Path, metavar="FIȘIER")
+    parser.add_argument("--explain", action="store_true")
     parser.add_argument("--no-save", action="store_true")
 
 
@@ -252,22 +300,11 @@ def _run_from_sources(args: argparse.Namespace, sources: list[str], instruction:
         print(f"Eroare: {exc}", file=sys.stderr)
         return 2
 
-    if args.as_json:
-        output = json.dumps([r.to_dict() for r in results], ensure_ascii=False, indent=2)
-    else:
-        output = "\n\n".join(_render_result(r, len(results)) for r in results)
-
-    if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(output + "\n", encoding="utf-8")
-        print(f"Scris în {args.out}")
-    else:
-        print(output)
-
+    code = _deliver(args, results)
     if not args.no_save:
         for result in results:
             history_store.save(brief, result)
-    return 0
+    return code
 
 
 def _cmd_vision(args: argparse.Namespace) -> int:
@@ -382,6 +419,237 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
     serve(host=args.host, port=args.port, open_browser=not args.no_browser)
     return 0
+
+
+def _read_source(args: argparse.Namespace) -> tuple[str, list[str]]:
+    """Adună conținutul de optimizat: text scris, fișier, adresă sau poză."""
+    from .media import MediaError, is_url, load_page
+    from .pipeline import analyze, load_all
+
+    notes: list[str] = []
+    parts: list[str] = []
+
+    if args.text:
+        parts.append(" ".join(args.text))
+    if args.file:
+        parts.append(args.file.read_text(encoding="utf-8"))
+    if args.url:
+        page = load_page(args.url)
+        parts.append(f"{page.title}\n\n{page.text}")
+        notes.append(f"Conținut citit de la {args.url} ({len(page.text)} caractere).")
+    if args.image:
+        from .llm import DEFAULT_MODEL
+
+        bundle = load_all(args.image)
+        fields = analyze(bundle, "", model=args.model or DEFAULT_MODEL, effort=args.effort)
+        described = ". ".join(
+            str(fields[key]) for key in ("subject", "environment", "style", "detail")
+            if fields.get(key)
+        )
+        parts.append(described)
+        notes.append(
+            "Textul sursă vine din analiza pozelor. Verifică-l: e descrierea "
+            "modelului, nu ce ai fi scris tu."
+        )
+        del MediaError, is_url
+
+    return "\n\n".join(part for part in parts if part.strip()), notes
+
+
+def _cmd_seo(args: argparse.Namespace) -> int:
+    """Prompt SEO pornind de la conținutul tău."""
+    from .llm import ModelUnavailable
+    from .media import MediaError
+    from .seo import CONTENT_TYPES, INTENTS
+    from .vision import VisionError
+
+    try:
+        source, notes = _read_source(args)
+    except MediaError as exc:
+        print(f"Eroare la citirea sursei: {exc}", file=sys.stderr)
+        return 2
+    except ModelUnavailable as exc:
+        print(f"Analiza pozelor are nevoie de un model: {exc}", file=sys.stderr)
+        return 3
+    except (VisionError, OSError) as exc:
+        print(f"Eroare: {exc}", file=sys.stderr)
+        return 2
+
+    subject = " ".join(args.despre) if args.despre else ""
+    if not source and not subject:
+        print(
+            "Am nevoie ori de conținut (text, --file, --url, --image), ori de un "
+            "subiect scris după comandă.",
+            file=sys.stderr,
+        )
+        return 2
+
+    options = {
+        "domain": args.tip,
+        "target": args.target,
+        "platform": args.platform or "google",
+        "keyword": args.keyword or "",
+        "intent": args.intent or "",
+        "source_text": source,
+        "must": args.must,
+        "avoid": args.avoid,
+        "lang": args.lang,
+        "min_words": args.min_words,
+        "max_words": args.max_words,
+        "seed": args.seed,
+    }
+    if args.preset:
+        options = presets.apply(args.preset, options)
+
+    try:
+        brief = Brief(idea=subject or source[:120], mode=MODE_SEO, **options)
+        results = generate_many(brief, max(1, args.variants))
+    except (ValueError, presets.PresetError) as exc:
+        print(f"Eroare: {exc}", file=sys.stderr)
+        return 2
+
+    for result in results:
+        result.notes = notes + result.notes
+
+    code = _deliver(args, results)
+    if not args.no_save:
+        for result in results:
+            history_store.save(brief, result)
+    del CONTENT_TYPES, INTENTS
+    return code
+
+
+def _parse_fields(text: str) -> dict[str, str]:
+    """Citește un text cu rânduri de forma „TITLU: ...” în câmpuri cunoscute."""
+    values: dict[str, str] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        label, separator, rest = line.partition(":")
+        key = None
+        if separator:
+            normalised = label.strip().lower()
+            for field_key, aliases in FIELD_ALIASES.items():
+                if normalised in aliases:
+                    key = field_key
+                    break
+        if key:
+            current = key
+            values[key] = rest.strip()
+        elif current and line.strip():
+            values[current] = (values[current] + " " + line.strip()).strip()
+    return values
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    """Verifică lungimile față de limitele platformei."""
+    fields = known_fields(args.platform)
+    if not fields:
+        print(f"Platforma {args.platform!r} nu are limite de câmp definite.", file=sys.stderr)
+        return 2
+
+    if args.field:
+        values = {args.field: " ".join(args.text)}
+    else:
+        raw = args.file.read_text(encoding="utf-8") if args.file else " ".join(args.text)
+        values = _parse_fields(raw)
+        if not values:
+            print(
+                "Nu am găsit câmpuri etichetate. Scrie textul ca „TITLU: ...” pe rânduri, "
+                f"sau folosește --field. Câmpuri cunoscute: {', '.join(fields)}.",
+                file=sys.stderr,
+            )
+            return 2
+
+    rows = check_text(args.platform, values)
+    if not rows:
+        print(
+            f"Niciun câmp recunoscut pentru {args.platform}. "
+            f"Cunoscute: {', '.join(fields)}.",
+            file=sys.stderr,
+        )
+        return 2
+
+    marks = {"ok": "✓", "atentie": "!", "depasit": "✗", "gol": "·"}
+    failed = False
+    print(RULE)
+    print(f"VERIFICARE — {PLATFORMS[args.platform].label}")
+    print(RULE)
+    for key, verdict, length, explanation, label in rows:
+        if verdict == "depasit":
+            failed = True
+        print(f"  {marks[verdict]} {label:<28} {length:>5} caractere — {explanation}")
+    if failed:
+        print("\nCâmpurile marcate cu ✗ vor fi respinse sau tăiate.")
+    return 1 if failed else 0
+
+
+def _cmd_series(args: argparse.Namespace) -> int:
+    """O serie de prompturi cu același aspect vizual și subiecte diferite."""
+    if len(args.items) < 2:
+        print("O serie are nevoie de cel puțin două subiecte.", file=sys.stderr)
+        return 2
+
+    options = {
+        "target": args.target,
+        "platform": args.platform,
+        "style": args.style,
+        "aspect": args.aspect,
+        "must": args.must,
+        "avoid": args.avoid,
+        "lang": args.lang,
+        "min_words": args.min_words,
+        "max_words": args.max_words,
+    }
+    if args.size:
+        try:
+            options["width"], options["height"] = parse_size(args.size)
+        except ValueError as exc:
+            print(f"Eroare: {exc}", file=sys.stderr)
+            return 2
+    if args.preset:
+        try:
+            options = presets.apply(args.preset, options)
+        except presets.PresetError as exc:
+            print(f"Eroare: {exc}", file=sys.stderr)
+            return 2
+    options.pop("mode", None)
+
+    # Ce se păstrează identic peste toată seria. Subiectul, evident, nu.
+    LOCKED = ("environment", "lighting", "palette", "style", "detail", "camera", "lens")
+
+    results: list[GeneratedPrompt] = []
+    shared: dict[str, str] = {}
+    brief: Brief | None = None
+
+    try:
+        for index, item in enumerate(args.items):
+            brief = Brief(idea=item, mode=args.mode, seed=args.seed,
+                          overrides=dict(shared), **options)
+            result = generate_many(brief, 1)[0]
+            if index == 0:
+                # Primul element stabilește aspectul; restul îl moștenesc, așa
+                # că seria arată ca și cum ar fi fost fotografiată în aceeași zi.
+                shared = {
+                    key: value for key, value in result.chosen_fields.items()
+                    if key in LOCKED and value
+                }
+            # Numerotarea din antet urmează seria, nu variantele unei idei.
+            result.variant = index + 1
+            result.notes.insert(
+                0,
+                f"Element {index + 1} din {len(args.items)}: „{item}”. "
+                f"Aspectul e comun pe toată seria.",
+            )
+            results.append(result)
+    except ValueError as exc:
+        print(f"Eroare: {exc}", file=sys.stderr)
+        return 2
+
+    code = _deliver(args, results)
+    if brief is not None and not args.no_save:
+        for result in results:
+            history_store.save(brief, result)
+    return code
 
 
 def _cmd_models(args: argparse.Namespace) -> int:
@@ -538,7 +806,10 @@ def _cmd_lexicon(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="promptforge",
-        description="Generează prompturi detaliate (300-500 de cuvinte) pentru modele de text și de imagine.",
+        description=(
+            "Generează prompturi detaliate (300-3000 de cuvinte) pentru text, "
+            "imagine, video și SEO."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"PromptForge {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -554,6 +825,72 @@ def build_parser() -> argparse.ArgumentParser:
     video_parser = sub.add_parser("video", help="prompt pentru un model video")
     _add_common(video_parser, MODE_VIDEO)
     video_parser.set_defaults(func=lambda a: _run_generation(a, MODE_VIDEO))
+
+    seo_parser = sub.add_parser(
+        "seo", help="text optimizat pentru căutare, pornind de la conținutul tău")
+    seo_parser.add_argument("despre", nargs="*", help="subiectul, dacă nu dai conținut")
+    seo_parser.add_argument("--text", nargs="+", help="conținutul de optimizat, scris direct")
+    seo_parser.add_argument("--file", type=Path, help="conținutul dintr-un fișier")
+    seo_parser.add_argument("--url", help="conținutul de la o adresă web")
+    seo_parser.add_argument("--image", action="append", default=[],
+                            help="o poză de descris și optimizat (se poate repeta)")
+    seo_parser.add_argument("--tip", default="articol", choices=sorted(SEO_TYPES),
+                            help="tipul de pagină")
+    seo_parser.add_argument("--keyword", help="cuvântul-cheie principal (altfel se extrage)")
+    seo_parser.add_argument("--intent", choices=sorted(SEO_INTENTS),
+                            help="intenția de căutare")
+    seo_parser.add_argument("--target", help="modelul-țintă")
+    seo_parser.add_argument("--platform", default="google", choices=sorted(PLATFORMS))
+    seo_parser.add_argument("--lang", default="ro", choices=["ro", "en"])
+    seo_parser.add_argument("--must", action="append", default=[], metavar="CERINȚĂ")
+    seo_parser.add_argument("--avoid", action="append", default=[], metavar="INTERDICȚIE")
+    seo_parser.add_argument("--variants", type=int, default=1)
+    seo_parser.add_argument("--seed", type=int, default=0)
+    seo_parser.add_argument("--min-words", type=int, default=DEFAULT_MIN_WORDS)
+    seo_parser.add_argument("--max-words", type=int, default=DEFAULT_MAX_WORDS)
+    seo_parser.add_argument("--preset")
+    seo_parser.add_argument("--model", default=None)
+    seo_parser.add_argument("--effort", default="high",
+                            choices=["low", "medium", "high", "xhigh", "max"])
+    seo_parser.add_argument("--out", type=Path)
+    seo_parser.add_argument("--json", action="store_true", dest="as_json")
+    seo_parser.add_argument("--export", type=Path, metavar="FIȘIER")
+    seo_parser.add_argument("--explain", action="store_true")
+    seo_parser.add_argument("--no-save", action="store_true")
+    seo_parser.set_defaults(func=_cmd_seo)
+
+    check_parser = sub.add_parser(
+        "verifica", help="verifică lungimile față de limitele platformei")
+    check_parser.add_argument("text", nargs="*", help="textul de verificat")
+    check_parser.add_argument("--platform", required=True, choices=sorted(PLATFORMS))
+    check_parser.add_argument("--file", type=Path, help="citește textul dintr-un fișier")
+    check_parser.add_argument("--field", choices=sorted(FIELD_ALIASES),
+                              help="verifică un singur câmp, dat direct")
+    check_parser.set_defaults(func=_cmd_check)
+
+    series_parser = sub.add_parser(
+        "serie", help="prompturi cu același aspect, pentru subiecte diferite")
+    series_parser.add_argument("--items", nargs="+", required=True, metavar="SUBIECT",
+                               help="subiectele seriei, cel puțin două")
+    series_parser.add_argument("--mode", default=MODE_IMAGE, choices=[MODE_IMAGE, MODE_VIDEO])
+    series_parser.add_argument("--target")
+    series_parser.add_argument("--platform", choices=sorted(PLATFORMS))
+    series_parser.add_argument("--style")
+    series_parser.add_argument("--aspect")
+    series_parser.add_argument("--size")
+    series_parser.add_argument("--lang", default=None, choices=["ro", "en"])
+    series_parser.add_argument("--must", action="append", default=[], metavar="CERINȚĂ")
+    series_parser.add_argument("--avoid", action="append", default=[], metavar="INTERDICȚIE")
+    series_parser.add_argument("--seed", type=int, default=0)
+    series_parser.add_argument("--min-words", type=int, default=DEFAULT_MIN_WORDS)
+    series_parser.add_argument("--max-words", type=int, default=DEFAULT_MAX_WORDS)
+    series_parser.add_argument("--preset")
+    series_parser.add_argument("--out", type=Path)
+    series_parser.add_argument("--json", action="store_true", dest="as_json")
+    series_parser.add_argument("--export", type=Path, metavar="FIȘIER")
+    series_parser.add_argument("--explain", action="store_true")
+    series_parser.add_argument("--no-save", action="store_true")
+    series_parser.set_defaults(func=_cmd_series)
 
     models_parser = sub.add_parser("modele", help="modelele disponibile și dacă sunt gratis")
     models_parser.add_argument("--kind", choices=["text", "image", "video"])

@@ -49,8 +49,8 @@ def _label(name: str, lang: str) -> str:
 
 def build_sections(
     brief: Brief, domain: str, picker: Picker, duration: int
-) -> tuple[list[Section], list[Section], list[str], list[str]]:
-    """Blocurile promptului video, rezerva, negativele și observațiile."""
+) -> tuple[list[Section], list[Section], list[str], list[str], dict[str, str]]:
+    """Blocurile video, rezerva, negativele, observațiile și câmpurile alese."""
     data = VIDEO_DOMAINS.get(domain, VIDEO_DOMAINS["general"])
     lang = brief.lang
     notes: list[str] = []
@@ -153,7 +153,11 @@ def build_sections(
     # Adâncimea vizuală se aplică și clipului: compoziție, materiale, lumină,
     # atmosferă sunt aceleași probleme, doar că trebuie să rămână stabile în timp.
     reserve = image_depth(lang)
-    return sections, reserve, negatives, notes
+    chosen = {
+        "camera": shot, "movement": movement, "pacing": pacing,
+        "style": look, "audio": audio, "physics": physics,
+    }
+    return sections, reserve, negatives, notes, chosen
 
 
 def _to_prose(sections: list[Section]) -> str:
@@ -189,7 +193,7 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
     duration = brief.duration or DEFAULT_DURATION
     liked, disliked = feedback.preferences()
     picker = Picker(brief.seed + variant * 1000, liked, disliked)
-    sections, reserve, negatives, notes = build_sections(brief, domain, picker, duration)
+    sections, reserve, negatives, notes, chosen = build_sections(brief, domain, picker, duration)
 
     if brief.aspect:
         aspect = brief.aspect
@@ -238,4 +242,5 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
         parameters=parameters,
         notes=notes,
         used_descriptors=picker.chosen,
+        chosen_fields=chosen,
     )

@@ -8,6 +8,7 @@ from typing import Any
 MODE_TEXT = "text"
 MODE_IMAGE = "image"
 MODE_VIDEO = "video"
+MODE_SEO = "seo"
 
 DEFAULT_MIN_WORDS = 300
 DEFAULT_MAX_WORDS = 500
@@ -27,6 +28,9 @@ class Brief:
     style: str | None = None           # doar pentru imagine: stil impus
     aspect: str | None = None          # pentru imagine și video
     duration: int = 0                  # secunde, doar pentru video; 0 = implicit
+    source_text: str = ""              # doar pentru SEO: conținutul de optimizat
+    keyword: str = ""                  # doar pentru SEO: cuvântul-cheie impus
+    intent: str = ""                   # doar pentru SEO: intenția de căutare
     subject: str | None = None         # doar pentru imagine: subiectul, formulat în engleză
     platform: str | None = None        # tiktok, instagram, facebook, google, youtube, linkedin, x
     width: int = 0                     # dimensiunea-țintă în pixeli; 0 = nespecificată
@@ -45,9 +49,10 @@ class Brief:
         if not self.idea or not self.idea.strip():
             raise ValueError("Ideea nu poate fi goală.")
         self.idea = " ".join(self.idea.split())
-        if self.mode not in (MODE_TEXT, MODE_IMAGE, MODE_VIDEO):
+        if self.mode not in (MODE_TEXT, MODE_IMAGE, MODE_VIDEO, MODE_SEO):
             raise ValueError(
-                f"Mod necunoscut: {self.mode!r} (folosește 'text', 'image' sau 'video')."
+                f"Mod necunoscut: {self.mode!r} "
+                f"(folosește 'text', 'image', 'video' sau 'seo')."
             )
         if self.lang is None:
             # Prompturile de text sunt implicit în română, cele de imagine în
@@ -115,6 +120,9 @@ class GeneratedPrompt:
     refined_by: str = ""   # numele modelului, dacă promptul a trecut prin --refine
     used_descriptors: list[str] = field(default_factory=list)
     # Descriptorii aleși din vocabular, ca `promptforge bun` să știe ce să noteze.
+    chosen_fields: dict[str, str] = field(default_factory=dict)
+    # Ce descriptor a intrat în fiecare câmp (lumină, paletă, stil…). O serie de
+    # prompturi le refolosește ca suprascrieri, ca toate să arate la fel.
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

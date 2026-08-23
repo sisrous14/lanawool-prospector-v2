@@ -1,7 +1,11 @@
 # PromptForge
 
 Transformă o idee scrisă în două rânduri într-un prompt detaliat — de la 300
-până la 3000 de cuvinte — pentru modele de text, de imagine sau de video.
+până la 3000 de cuvinte — pentru modele de text, de imagine, de video sau
+pentru conținut optimizat SEO.
+
+Programul generează prompturi. Nu generează imagini și nu le va genera: pentru
+asta ai modelul căruia îi dai promptul.
 
 Motorul rulează local, fără dependențe și fără internet. Opțional, promptul
 poate fi rescris de un model Claude, sau construit pornind de la pozele tale.
@@ -12,6 +16,9 @@ $ promptforge image "portret al unui pescar batran" --target midjourney
 $ promptforge video "o reclama la cafea" --platform tiktok --duration 15
 $ promptforge vision poza.jpg --instruct "vreau un prompt care sa refaca lumina asta"
 $ promptforge remix stil.jpg subiect.jpg --take lumina si paleta
+$ promptforge seo --file articol.txt --tip articol
+$ promptforge serie --items "o cana" "un ceainic" "o rasnita"
+$ promptforge verifica --platform google --file anunt.txt
 $ promptforge modele          # ce modele există și care sunt gratis
 $ promptforge serve           # interfață web locală
 ```
@@ -182,6 +189,91 @@ care nu are voie să pâlpâie între cadre, geometria care trebuie să reziste
 |---|---|
 | `sora`, `veo` | paragraf continuu, fără prompt negativ |
 | `kling`, `runway` | blocuri etichetate, cu prompt negativ |
+
+## Conținut SEO
+
+Îi dai conținutul tău — text, fișier, adresă sau poză — și îți construiește
+promptul care produce textul optimizat pentru căutare.
+
+```bash
+promptforge seo --file articol.txt --tip articol
+promptforge seo --url https://exemplu.ro/produs --tip produs --intent tranzactional
+promptforge seo --image poza.jpg --tip imagine
+promptforge seo "ghid despre paine cu maia" --keyword "paine cu maia"
+```
+
+Cuvintele-cheie se **extrag din conținutul tău**, local, fără niciun apel de
+rețea: frecvență peste cuvinte și peste perechi de cuvinte, cu deduplicare pe
+rădăcini, ca „pâine maia” și „pâinea maia” să nu apară ca două lucruri diferite.
+Îți spune ce a găsit; îl schimbi cu `--keyword` dacă vizezi altceva.
+
+Promptul rezultat conține conținutul tău ca sursă a adevărului, cuvintele-cheie,
+intenția de căutare, lista exactă de livrabile pentru tipul de pagină, limitele
+reale de caractere ale platformei și regulile de optimizare.
+
+| `--tip` | Livrabile |
+|---|---|
+| `articol` | title, meta, H1, structură H2, intro, corp, FAQ, slug, ancore interne |
+| `produs` | title, meta, H1, descriere scurtă și lungă, bullet-uri, specificații, FAQ, alt text |
+| `imagine` | alt text, nume de fișier, title, legendă, text înconjurător, schema ImageObject |
+| `categorie` | title, meta, H1, intro, ghid de alegere, FAQ, ancore |
+| `landing` | title, meta, H1, subtitlu, trei secțiuni, dovezi, CTA, FAQ |
+| `local` | title, meta, H1, descriere Google Business, NAP, FAQ local |
+
+`--intent informational｜comercial｜tranzactional｜navigational` schimbă structura:
+cine compară are nevoie de criterii, cine cumpără are nevoie de preț.
+
+## Verificarea lungimilor
+
+Textul primit înapoi de la model se verifică aici, înainte să-l pui în CMS:
+
+```
+$ promptforge verifica --platform google --file anunt.txt
+  ✗ Titlu de anunț       44 caractere — cu 14 caractere peste limita de 30
+  ✓ Descriere de anunț   74 caractere — din 90
+  ✗ Meta description    170 caractere — cu 10 caractere peste limita de 160
+```
+
+Textul se dă cu rânduri de forma `TITLU: …`, `DESCRIERE: …`, `META: …` — sau
+`--field titlu "textul"` pentru un singur câmp. Comanda iese cu codul 1 dacă
+ceva depășește, deci poate fi pusă într-un script. Câmpurile pe care platforma
+nu le are sunt ignorate: nu inventăm limite.
+
+Verificatorul e și în interfața web, sub formularul de generare.
+
+## Serii cu același aspect
+
+Pentru un catalog sau un feed, vrei zece imagini care arată ca o familie:
+
+```bash
+promptforge serie --items "o cana de cafea" "un ceainic" "o rasnita" \
+  --target flux --style "studio product photography"
+```
+
+Primul element stabilește decorul, lumina, paleta, stilul, textura și
+obiectivul. Restul le moștenesc identic și schimbă doar subiectul. Merge și pe
+`--mode video`.
+
+## Export
+
+```bash
+promptforge image "o cana" --variants 3 --export prompturi.csv
+promptforge seo --file articol.txt --export brief.md
+```
+
+Formatul se ia din extensie: `.csv` (un rând per prompt, pentru foaie de
+calcul), `.json` (structura completă), `.md` (document de citit) sau `.txt`
+(doar prompturile, separate).
+
+## Explică-mi promptul
+
+```bash
+promptforge image "un portret" --explain
+```
+
+După prompt, pentru fiecare secțiune, un rând despre ce face și ce se schimbă
+fără ea. „LIGHTING — direcția și calitatea luminii. Dacă schimbi o singură
+secțiune, schimb-o pe asta.” Scopul e să nu rămâi dependent de program.
 
 ## Poze și linkuri
 
@@ -371,6 +463,7 @@ bibliotecii standard.
 
 ```bash
 promptforge ask          # mod interactiv, cu întrebări
+promptforge verifica     # limitele de caractere ale platformei
 promptforge liste        # domeniile, țintele, platformele și tonurile
 promptforge modele       # modelele, cu eticheta de preț
 promptforge istoric      # ce ai generat până acum
@@ -442,6 +535,12 @@ toate într-un text gata de copiat.
 - Etichetele de preț ale modelelor sunt de la momentul scrierii. Se schimbă des.
 - Auditul verifică structura, nu calitatea. Un scor de 100 nu garantează un
   prompt bun, dar unul mic arată aproape sigur ceva lipsă.
+- Extragerea cuvintelor-cheie măsoară ce e în textul tău, nu ce caută lumea.
+  Nu are date de volum de căutare și nu le poate inventa: pentru cercetarea
+  propriu-zisă de cuvinte-cheie ai nevoie de un instrument cu date reale.
+- Programul generează prompturi, nu conținut final. Textul SEO îl produce
+  modelul căruia îi dai promptul; cu `--refine` face și pasul ăsta, dar tot un
+  model îl face, nu programul.
 
 ## Teste
 

@@ -166,8 +166,8 @@ def _more(options: list[str], used: str, picker: Picker, count: int = 4) -> list
 
 def build_sections(
     brief: Brief, domain: str, picker: Picker
-) -> tuple[list[Section], list[Section], list[str], list[str]]:
-    """Construiește blocurile, rezerva, lista de negative și observațiile."""
+) -> tuple[list[Section], list[Section], list[str], list[str], dict[str, str]]:
+    """Construiește blocurile, rezerva, negativele, observațiile și câmpurile alese."""
     data = IMAGE_DOMAINS.get(domain, IMAGE_DOMAINS["general"])
     lang = brief.lang
     p = _phrases(lang)
@@ -288,7 +288,13 @@ def build_sections(
     )
 
     reserve.extend(image_depth(lang))
-    return sections, reserve, negatives, notes
+
+    chosen = {
+        "environment": environment, "camera": camera, "lens": lens,
+        "lighting": lighting, "style": style, "composition": composition,
+        "palette": palette, "mood": mood, "detail": detail,
+    }
+    return sections, reserve, negatives, notes, chosen
 
 
 def _to_prose(sections: list[Section]) -> str:
@@ -321,7 +327,7 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
     spec = IMAGE_TARGETS[target]
     liked, disliked = feedback.preferences()
     picker = Picker(brief.seed + variant * 1000, liked, disliked)
-    sections, reserve, negatives, notes = build_sections(brief, domain, picker)
+    sections, reserve, negatives, notes, chosen = build_sections(brief, domain, picker)
 
     # Aspectul, în ordinea autorității: ce a cerut explicit utilizatorul, apoi
     # dimensiunea în pixeli pe care a dat-o, apoi formatul platformei, apoi ce a
@@ -403,4 +409,5 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
         parameters=parameters,
         notes=notes,
         used_descriptors=picker.chosen,
+        chosen_fields=chosen,
     )

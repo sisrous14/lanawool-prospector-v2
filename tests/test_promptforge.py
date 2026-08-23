@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import csv
+import io
 import json
 import os
 import struct
@@ -25,8 +27,13 @@ from promptforge.catalog import (
     PAID,
     PLATFORMS,
     aspect_of,
+    check_text,
     parse_size,
 )
+from promptforge.cli import _parse_fields
+from promptforge.explain import ALL as EXPLAIN_ALL, explain
+from promptforge.export import infer_format, render as export_render, write as export_write
+from promptforge.seo import CONTENT_TYPES, analyse as seo_analyse, keywords as seo_keywords
 from promptforge.media import ImageRef, MediaError, load_image, read_dimensions
 from promptforge.models import Section
 from promptforge.pipeline import from_sources
@@ -1014,3 +1021,272 @@ class TestCLIExtins(unittest.TestCase):
     def test_subiectul_dat_manual_este_invatat(self):
         main(["image", "un pescar batran", "--subject", "an old fisherman", "--no-save"])
         self.assertIn("un pescar batran", learned())
+
+
+# ---------------------------------------------------------------------------
+# SEO, verificare, serie, export, explicații
+# ---------------------------------------------------------------------------
+
+SURSA_SEO = """Paine cu maia coapta zilnic in Cluj. Painea cu maia se face lent,
+cu faina macinata la piatra si apa de izvor. Brutaria noastra coace paine cu maia
+in fiecare dimineata, la ora 5. De ce paine cu maia? Painea cu maia se digera mai
+usor decat painea industriala si tine trei zile fara conservanti."""
+
+
+class TestExtragereSEO(unittest.TestCase):
+    def test_gaseste_expresia_principala(self):
+        primary, secondary = seo_keywords(SURSA_SEO)
+        self.assertIn("maia", primary)
+        self.assertTrue(secondary)
+
+    def test_nu_repeta_aceeasi_expresie_articulata(self):
+        # „paine maia” și „painea maia” sunt același lucru.
+        primary, secondary = seo_keywords(SURSA_SEO)
+        stems = [tuple(sorted(w[:5] for w in p.split())) for p in [primary] + secondary]
+        self.assertEqual(len(stems), len(set(stems)))
+
+    def test_ignora_cuvintele_de_umplutura(self):
+        primary, secondary = seo_keywords(SURSA_SEO)
+        for word in ["pentru", "despre", "fiecare"]:
+            self.assertNotIn(word, [primary] + secondary)
+
+    def test_text_gol(self):
+        self.assertEqual(seo_keywords(""), ("", []))
+
+    def test_statistici(self):
+        stats = seo_analyse(SURSA_SEO)
+        self.assertGreater(stats.words, 20)
+        self.assertGreater(stats.sentences, 2)
+        self.assertTrue(stats.questions)
+
+
+class TestPrompturiSEO(unittest.TestCase):
+    def test_toate_tipurile_produc_prompt_valid(self):
+        for content_type in CONTENT_TYPES:
+            for lang in ("ro", "en"):
+                with self.subTest(tip=content_type, lang=lang):
+                    result = generate(Brief(
+                        idea="paine cu maia", mode="seo", domain=content_type,
+                        source_text=SURSA_SEO, lang=lang,
+                    ))
+                    self.assertEqual(result.mode, "seo")
+                    self.assertGreaterEqual(result.word_count, 300)
+                    self.assertLessEqual(result.word_count, 500)
+
+    def test_sursa_ajunge_in_prompt(self):
+        result = generate(Brief(idea="x", mode="seo", source_text=SURSA_SEO))
+        self.assertIn("faina macinata la piatra", result.prompt)
+
+    def test_cuvantul_cheie_extras_e_semnalat(self):
+        result = generate(Brief(idea="x", mode="seo", source_text=SURSA_SEO))
+        self.assertTrue(any("extras din conținut" in note for note in result.notes))
+
+    def test_cuvantul_cheie_impus_are_prioritate(self):
+        result = generate(Brief(idea="x", mode="seo", source_text=SURSA_SEO,
+                                keyword="brutarie artizanala cluj"))
+        self.assertIn("brutarie artizanala cluj", result.prompt)
+        self.assertFalse(any("extras din conținut" in note for note in result.notes))
+
+    def test_limitele_platformei_ajung_in_prompt(self):
+        result = generate(Brief(idea="x", mode="seo", source_text=SURSA_SEO,
+                                platform="google"))
+        self.assertIn("30 de caractere", result.prompt)
+
+    def test_functioneaza_si_fara_sursa(self):
+        result = generate(Brief(idea="ghid despre paine cu maia", mode="seo"))
+        self.assertIn("de la zero", result.prompt)
+        self.assertGreaterEqual(result.word_count, 300)
+
+    def test_intentia_schimba_promptul(self):
+        informational = generate(Brief(idea="x", mode="seo", source_text=SURSA_SEO,
+                                       intent="informational"))
+        transactional = generate(Brief(idea="x", mode="seo", source_text=SURSA_SEO,
+                                       intent="tranzactional"))
+        self.assertNotEqual(informational.prompt, transactional.prompt)
+        self.assertIn("gata să cumpere", transactional.prompt)
+
+    def test_tip_necunoscut(self):
+        with self.assertRaises(ValueError):
+            generate(Brief(idea="x", mode="seo", domain="inexistent"))
+
+    def test_intentie_necunoscuta(self):
+        with self.assertRaises(ValueError):
+            generate(Brief(idea="x", mode="seo", intent="inexistenta"))
+
+    def test_sursa_prea_lunga_e_scurtata_si_semnalata(self):
+        result = generate(Brief(idea="x", mode="seo", source_text="cuvant " * 2000))
+        self.assertTrue(any("scurtată" in note for note in result.notes))
+
+    def test_etichetele_xml_sunt_specifice(self):
+        result = generate(Brief(idea="x", mode="seo", source_text=SURSA_SEO,
+                                target="claude"))
+        self.assertIn("<cuvinte_cheie>", result.prompt)
+        self.assertNotIn("<sectiune>", result.prompt)
+
+
+class TestVerificareLungimi(unittest.TestCase):
+    def test_prinde_depasirea(self):
+        rows = check_text("google", {"titlu": "x" * 45})
+        self.assertEqual(rows[0][1], "depasit")
+        self.assertEqual(rows[0][2], 45)
+
+    def test_accepta_ce_incape(self):
+        rows = check_text("google", {"titlu": "Brutarie in Cluj"})
+        self.assertEqual(rows[0][1], "ok")
+
+    def test_pragul_recomandat(self):
+        rows = check_text("youtube", {"titlu": "x" * 80})
+        self.assertEqual(rows[0][1], "atentie")
+
+    def test_campurile_straine_sunt_ignorate(self):
+        # X nu are câmp „titlu”: nu inventăm o limită pentru el.
+        self.assertEqual(check_text("x", {"titlu": "ceva"}), [])
+
+    def test_platforma_necunoscuta(self):
+        with self.assertRaises(ValueError):
+            check_text("myspace", {"titlu": "ceva"})
+
+    def test_parsarea_campurilor(self):
+        parsed = _parse_fields("TITLU: Un titlu\nDESCRIERE: O descriere\ncare continua")
+        self.assertEqual(parsed["titlu"], "Un titlu")
+        self.assertEqual(parsed["descriere"], "O descriere care continua")
+
+    def test_parsarea_accepta_sinonime(self):
+        self.assertIn("titlu", _parse_fields("Headline: ceva"))
+        self.assertIn("meta", _parse_fields("Meta description: ceva"))
+
+    def test_cli_iese_cu_1_cand_depaseste(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.txt"
+            path.write_text("TITLU: " + "x" * 45, encoding="utf-8")
+            self.assertEqual(main(["verifica", "--platform", "google", "--file", str(path)]), 1)
+
+    def test_cli_iese_cu_0_cand_incape(self):
+        self.assertEqual(main(["verifica", "--platform", "google", "TITLU: Brutarie"]), 0)
+
+    def test_cli_fara_campuri_recunoscute(self):
+        self.assertEqual(main(["verifica", "--platform", "google", "text fara eticheta"]), 2)
+
+
+class TestSerie(unittest.TestCase):
+    def test_aspectul_e_identic_peste_serie(self):
+        locked = ("environment", "lighting", "palette", "style", "detail", "camera", "lens")
+        shared: dict[str, str] = {}
+        collected = []
+        for index, item in enumerate(["o cana", "un ceainic", "o rasnita"]):
+            result = generate(Brief(idea=item, mode="image", target="flux",
+                                    overrides=dict(shared)))
+            if index == 0:
+                shared = {k: v for k, v in result.chosen_fields.items() if k in locked}
+            collected.append(result.chosen_fields)
+        for key in locked:
+            with self.subTest(camp=key):
+                self.assertEqual(len({fields[key] for fields in collected}), 1)
+
+    def test_subiectele_raman_diferite(self):
+        first = generate(Brief(idea="o cana de cafea", mode="image"))
+        second = generate(Brief(idea="un ceainic", mode="image",
+                                overrides=dict(first.chosen_fields)))
+        self.assertNotEqual(first.prompt, second.prompt)
+
+    def test_cli_refuza_o_serie_de_unul_singur(self):
+        self.assertEqual(main(["serie", "--items", "o cana", "--no-save"]), 2)
+
+    def test_cli_genereaza_seria(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "serie.json"
+            code = main(["serie", "--items", "o cana", "un ceainic",
+                         "--export", str(out), "--no-save"])
+            self.assertEqual(code, 0)
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(len(data), 2)
+            self.assertEqual([row["variant"] for row in data], [1, 2])
+
+
+class TestExport(unittest.TestCase):
+    def _results(self):
+        return [generate(Brief(idea="a portrait", mode="image", target="flux"))]
+
+    def test_formatul_din_extensie(self):
+        self.assertEqual(infer_format(Path("x.CSV")), "csv")
+        with self.assertRaises(ValueError):
+            infer_format(Path("x.pdf"))
+
+    def test_csv_are_antet_si_un_rand(self):
+        rendered = export_render(self._results(), "csv")
+        self.assertTrue(rendered.startswith("index,mod,domeniu"))
+        self.assertEqual(len(list(csv.reader(io.StringIO(rendered)))), 2)
+
+    def test_json_e_valid(self):
+        data = json.loads(export_render(self._results(), "json"))
+        self.assertEqual(data[0]["mode"], "image")
+
+    def test_markdown_are_bloc_de_cod(self):
+        self.assertIn("```", export_render(self._results(), "md"))
+
+    def test_txt_contine_promptul_complet(self):
+        results = self._results()
+        self.assertIn(results[0].negative_prompt, export_render(results, "txt"))
+
+    def test_scrierea_pe_disc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "iesire.csv"
+            self.assertEqual(export_write(self._results(), path), "csv")
+            self.assertTrue(path.read_text(encoding="utf-8").startswith("index,"))
+
+
+class TestExplicatii(unittest.TestCase):
+    def test_gaseste_sectiunile_imaginii(self):
+        result = generate(Brief(idea="a portrait", mode="image", target="flux"))
+        rows = explain(result.prompt, "image")
+        titles = [title for title, _ in rows]
+        self.assertIn("SUBJECT", titles)
+        self.assertIn("LIGHTING", titles)
+
+    def test_functioneaza_si_pe_etichete_xml(self):
+        result = generate(Brief(idea="o idee de test", mode="text", target="claude"))
+        self.assertTrue(explain(result.prompt, "text"))
+
+    def test_fiecare_mod_are_explicatii(self):
+        for mode in ("text", "image", "video", "seo"):
+            with self.subTest(mode=mode):
+                self.assertTrue(EXPLAIN_ALL[mode])
+
+    def test_promptul_gol_nu_da_nimic(self):
+        self.assertEqual(explain("", "image"), [])
+
+
+class TestCLIFinal(unittest.TestCase):
+    def setUp(self):
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        os.environ["PROMPTFORGE_HOME"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def test_seo_din_text(self):
+        self.assertEqual(main(["seo", "--text", SURSA_SEO, "--tip", "produs", "--no-save"]), 0)
+
+    def test_seo_din_fisier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sursa.txt"
+            path.write_text(SURSA_SEO, encoding="utf-8")
+            self.assertEqual(main(["seo", "--file", str(path), "--no-save"]), 0)
+
+    def test_seo_fara_nimic(self):
+        self.assertEqual(main(["seo", "--no-save"]), 2)
+
+    def test_export_cu_extensie_gresita(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                main(["image", "ceva", "--export", str(Path(tmp) / "x.pdf"), "--no-save"]), 2
+            )
+
+    def test_explain_pe_toate_modurile(self):
+        for mode, idea in [("text", "o idee"), ("image", "a portrait"),
+                           ("video", "a coffee ad")]:
+            with self.subTest(mode=mode):
+                self.assertEqual(main([mode, idea, "--explain", "--no-save"]), 0)

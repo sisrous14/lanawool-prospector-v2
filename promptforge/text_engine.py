@@ -325,15 +325,25 @@ def build_sections(brief: Brief, domain: str, picker: Picker) -> tuple[list[Sect
     return sections, reserve
 
 
-def _render(sections: list[Section], style: str, lang: str) -> str:
-    """Redă secțiunile în stilul cerut de modelul-țintă."""
+def _render(
+    sections: list[Section],
+    style: str,
+    lang: str,
+    tags: dict[str, str] | None = None,
+) -> str:
+    """Redă secțiunile în stilul cerut de modelul-țintă.
+
+    `tags` permite altui mod (SEO, de pildă) să-și dea propriile etichete XML,
+    fiindcă secțiunile lui nu sunt cele din `LABELS`.
+    """
+    extra = tags or {}
     if style == "xml":
         blocks = []
         for section in sections:
             if not section.lines:
                 continue
             key = next((k for k, v in LABELS.items() if _title(k, lang) == section.title), None)
-            tag = _tag(key) if key else "sectiune"
+            tag = _tag(key) if key else extra.get(section.title, "sectiune")
             body = render_section(Section("", section.lines, bullet=section.bullet, lead=section.lead))
             blocks.append(f"<{tag}>\n{body}\n</{tag}>")
         return "\n\n".join(blocks)
