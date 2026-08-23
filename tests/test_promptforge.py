@@ -20,6 +20,8 @@ from promptforge.detect import detect_domain, keywords_of
 from promptforge.history import load, save
 from promptforge.image_engine import looks_romanian
 from promptforge.audit import audit as run_audit
+from promptforge.auto import decide
+from promptforge.chain import ChainError, build as chain_build
 from promptforge.catalog import (
     FREE,
     FREEMIUM,
@@ -35,7 +37,7 @@ from promptforge.explain import ALL as EXPLAIN_ALL, explain
 from promptforge.export import infer_format, render as export_render, write as export_write
 from promptforge.seo import CONTENT_TYPES, analyse as seo_analyse, keywords as seo_keywords
 from promptforge.media import ImageRef, MediaError, load_image, read_dimensions
-from promptforge.models import Section
+from promptforge.models import MAX_ALLOWED_WORDS, PROMPT_WORD_CAP, Section
 from promptforge.pipeline import from_sources
 from promptforge.translate import forget, learn, learned, to_english
 from promptforge.vision import VisionError, analyze_images
@@ -774,9 +776,16 @@ class TestPrompturiLungi(unittest.TestCase):
                     self.assertGreaterEqual(result.word_count, lo)
                     self.assertLessEqual(result.word_count, hi)
 
-    def test_limita_superioara(self):
+    def test_peste_plafonul_unui_prompt_trimite_la_lant(self):
+        # 5000 e o cerere validă — dar aparține lanțului, nu unui singur prompt.
+        brief = Brief(idea="ceva", min_words=100, max_words=5000)
+        with self.assertRaises(ValueError) as caught:
+            generate(brief)
+        self.assertIn("generate_chain", str(caught.exception))
+
+    def test_limita_absoluta(self):
         with self.assertRaises(ValueError):
-            Brief(idea="ceva", min_words=100, max_words=5000)
+            Brief(idea="ceva", min_words=100, max_words=MAX_ALLOWED_WORDS + 1)
 
     def test_semnaleaza_cand_materialul_se_termina(self):
         result = generate(Brief(idea="ceva", mode="image", min_words=2990, max_words=3000))
@@ -1290,3 +1299,156 @@ class TestCLIFinal(unittest.TestCase):
                            ("video", "a coffee ad")]:
             with self.subTest(mode=mode):
                 self.assertEqual(main([mode, idea, "--explain", "--no-save"]), 0)
+
+
+# ---------------------------------------------------------------------------
+# Judecată proprie, mod automat, lanțuri de prompturi
+# ---------------------------------------------------------------------------
+
+class TestJudecataProprie(unittest.TestCase):
+    def test_apare_implicit_la_text_si_seo(self):
+        for mode, extra in [("text", {}), ("seo", {"source_text": "Paine cu maia."})]:
+            with self.subTest(mode=mode):
+                result = generate(Brief(idea="o cerere", mode=mode, target="claude", **extra))
+                self.assertIn("<judecata>", result.prompt)
+
+    def test_strict_o_scoate(self):
+        result = generate(Brief(idea="o cerere", mode="text", target="claude", strict=True))
+        self.assertNotIn("<judecata>", result.prompt)
+
+    def test_e_despre_executie_nu_despre_domeniu(self):
+        # Granița de domeniu stă chiar în rândul garantat, nu într-o extensie.
+        result = generate(Brief(idea="o cerere", mode="text"))
+        self.assertIn("nu rezolva altceva decât s-a cerut", result.prompt)
+
+    def test_nu_scoate_din_prompt_ce_a_cerut_omul(self):
+        # Un ton cerut explicit e o instrucțiune; latitudinea e doar un plus.
+        result = generate(Brief(idea="o cerere", mode="text", tone="sarcastic dar politicos"))
+        self.assertIn("sarcastic dar politicos", result.prompt)
+
+    def test_varianta_vizuala(self):
+        result = generate(Brief(idea="a portrait", mode="image", min_words=800, max_words=1000))
+        self.assertIn("strongest", result.prompt)
+
+
+class TestModAutomat(unittest.TestCase):
+    def test_alege_modul_din_semnale(self):
+        cases = {
+            "un articol optimizat SEO despre paine": "seo",
+            "un clip de 15 secunde cu produsul": "video",
+            "o fotografie de produs pentru un parfum": "image",
+            "scrie-mi un email de refuz": "text",
+        }
+        for idea, expected in cases.items():
+            with self.subTest(idea=idea):
+                self.assertEqual(decide(idea).options["mode"], expected)
+
+    def test_recunoaste_platforma_numita(self):
+        self.assertEqual(decide("un clip pentru TikTok").options["platform"], "tiktok")
+
+    def test_lungimea_urmeaza_cererea(self):
+        scurt = decide("scrie-mi ceva pe scurt")
+        lung = decide("am nevoie de o documentatie completa si detaliata")
+        self.assertLess(scurt.options["max_words"], lung.options["max_words"])
+
+    def test_imaginile_primesc_variante(self):
+        self.assertEqual(decide("o fotografie de produs").variants, 3)
+
+    def test_ce_ai_dat_tu_ramane_al_tau(self):
+        decision = decide("o fotografie de produs", {"mode": "text", "target": "gpt"})
+        self.assertEqual(decision.options["mode"], "text")
+        self.assertEqual(decision.options["target"], "gpt")
+
+    def test_explica_fiecare_alegere(self):
+        self.assertIn("fiindcă", decide("un clip pentru TikTok").explain())
+
+    def test_refuza_ideea_goala(self):
+        with self.assertRaises(ValueError):
+            decide("   ")
+
+    def test_cli_fara_subcomanda(self):
+        self.assertEqual(main(["o fotografie de produs pentru un parfum", "--no-save"]), 0)
+
+    def test_cli_auto_explicit(self):
+        self.assertEqual(main(["auto", "un email de refuz", "--no-save"]), 0)
+
+    def test_subcomenzile_raman_neatinse(self):
+        self.assertEqual(main(["image", "a portrait", "--no-save"]), 0)
+
+
+class TestLantDePrompturi(unittest.TestCase):
+    def test_imparte_dupa_bugetul_total(self):
+        links = chain_build(Brief(idea="un manual complet", mode="text", max_words=9000))
+        self.assertEqual(len(links), 4)
+        for link in links:
+            self.assertLessEqual(link.word_count, PROMPT_WORD_CAP)
+
+    def test_numar_explicit_de_parti(self):
+        links = chain_build(Brief(idea="un manual", mode="text"), parts=6)
+        self.assertEqual(len(links), 6)
+        self.assertEqual([link.variant for link in links], [1, 2, 3, 4, 5, 6])
+
+    def test_prima_veriga_cere_planul(self):
+        links = chain_build(Brief(idea="un manual", mode="text"), parts=3)
+        self.assertIn("planul numerotat", links[0].prompt)
+        self.assertIn("<<<STARE>>>", links[0].prompt)
+
+    def test_verigile_urmatoare_continua(self):
+        links = chain_build(Brief(idea="un manual", mode="text"), parts=3)
+        self.assertIn("partea 2 din 3", links[1].prompt)
+        self.assertIn("ULTIMA FRAZĂ", links[1].prompt)
+        self.assertIn("Nu reiei", links[1].prompt)
+
+    def test_ultima_veriga_inchide_lucrarea(self):
+        links = chain_build(Brief(idea="un manual", mode="text"), parts=3)
+        self.assertIn("ultima parte", links[-1].prompt)
+        # Ultima verigă cere închiderea, nu un nou bloc de stare de predat.
+        self.assertNotIn("<bloc_stare>", links[-1].prompt)
+        self.assertIn("<bloc_stare>", links[-2].prompt)
+
+    def test_cererea_initiala_e_purtata_in_fiecare_veriga(self):
+        links = chain_build(Brief(idea="un manual despre paine cu maia", mode="text"), parts=3)
+        for link in links[1:]:
+            self.assertIn("un manual despre paine cu maia", link.prompt)
+
+    def test_o_suta_de_verigi(self):
+        links = chain_build(Brief(idea="o lucrare foarte mare", mode="text"), parts=100)
+        self.assertEqual(len(links), 100)
+        self.assertIn("partea 100 din 100", links[-1].prompt)
+
+    def test_peste_o_suta_e_refuzat(self):
+        with self.assertRaises(ChainError):
+            chain_build(Brief(idea="x", mode="text"), parts=101)
+
+    def test_imaginea_nu_se_inlantuie(self):
+        with self.assertRaises(ChainError) as caught:
+            chain_build(Brief(idea="a portrait", mode="image"), parts=3)
+        self.assertIn("serie", str(caught.exception))
+
+    def test_seo_se_inlantuie(self):
+        links = chain_build(Brief(idea="x", mode="seo", source_text="Paine cu maia."), parts=2)
+        self.assertEqual(len(links), 2)
+
+    def test_o_singura_veriga_e_promptul_obisnuit(self):
+        links = chain_build(Brief(idea="ceva", mode="text"), parts=1)
+        self.assertEqual(len(links), 1)
+        self.assertNotIn("<<<STARE>>>", links[0].prompt)
+
+    def test_podeaua_verigii_e_raportata(self):
+        links = chain_build(Brief(idea="ceva", mode="text", max_words=500), parts=3)
+        self.assertTrue(any("în loc de 500" in note for note in links[0].notes))
+
+    def test_verigile_aduc_indrumare_diferita(self):
+        links = chain_build(Brief(idea="un manual", mode="text"), parts=4)
+        self.assertNotEqual(links[1].prompt, links[2].prompt)
+
+    def test_cli_inlantuie_automat_peste_plafon(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "lant.json"
+            code = main(["text", "un manual complet", "--max-words", "9000",
+                         "--export", str(out), "--no-save"])
+            self.assertEqual(code, 0)
+            self.assertEqual(len(json.loads(out.read_text(encoding="utf-8"))), 4)
+
+    def test_cli_parts(self):
+        self.assertEqual(main(["text", "un manual", "--parts", "3", "--no-save"]), 0)

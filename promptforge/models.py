@@ -12,7 +12,11 @@ MODE_SEO = "seo"
 
 DEFAULT_MIN_WORDS = 300
 DEFAULT_MAX_WORDS = 500
-MAX_ALLOWED_WORDS = 3000
+PROMPT_WORD_CAP = 3000        # cât încape practic într-un singur prompt
+CHAIN_OVERHEAD = 220          # cât ocupă, într-o verigă, protocolul de continuare
+MAX_LINKS = 100               # câte prompturi poate avea un lanț
+# Totalul e ce încape efectiv: plafonul, minus protocolul, ori numărul de verigi.
+MAX_ALLOWED_WORDS = (PROMPT_WORD_CAP - CHAIN_OVERHEAD) * MAX_LINKS
 
 
 @dataclass
@@ -41,6 +45,7 @@ class Brief:
     must: list[str] = field(default_factory=list)   # cerințe obligatorii extra
     avoid: list[str] = field(default_factory=list)  # interdicții extra
     lang: str | None = None            # limba promptului; None = automat
+    strict: bool = False               # True = fără latitudine; execută litera cererii
     seed: int = 0
     min_words: int = DEFAULT_MIN_WORDS
     max_words: int = DEFAULT_MAX_WORDS
@@ -76,8 +81,8 @@ class Brief:
             raise ValueError("Dimensiunea are nevoie și de lățime, și de înălțime.")
         if self.max_words > MAX_ALLOWED_WORDS:
             raise ValueError(
-                f"max_words nu poate depăși {MAX_ALLOWED_WORDS}. Peste atât, un prompt "
-                f"devine mai greu de urmărit de model decât de scris de tine."
+                f"max_words nu poate depăși {MAX_ALLOWED_WORDS} — adică {MAX_LINKS} de "
+                f"prompturi înlănțuite. Peste atât, lucrarea trebuie împărțită altfel."
             )
 
 

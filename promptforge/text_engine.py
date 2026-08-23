@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .assembly import count_words, fit, range_note, render_section
 from .catalog import PLATFORMS
 from .depth import (
@@ -12,7 +14,7 @@ from .depth import (
     platform_section,
     text_depth,
 )
-from . import feedback
+from . import feedback, judgment
 from .detect import Picker, detect_domain, keywords_of
 from .models import Brief, GeneratedPrompt, MODE_TEXT, Section
 from .targets import TEXT_TARGETS, default_text_target
@@ -33,6 +35,7 @@ LABELS: dict[str, tuple[str, str, str]] = {
     "check": ("VERIFICARE FINALĂ", "FINAL CHECK", "verificare"),
     "depth": ("NIVEL DE DETALIU", "LEVEL OF DETAIL", "detaliu"),
     "platform": ("REGULI DE PLATFORMĂ", "PLATFORM RULES", "platforma"),
+    "judgment": ("JUDECATĂ PROPRIE", "YOUR OWN JUDGMENT", "judecata"),
 }
 
 
@@ -43,6 +46,18 @@ def _title(key: str, lang: str) -> str:
 
 def _tag(key: str) -> str:
     return LABELS[key][2]
+
+
+def slugify(title: str) -> str:
+    """Etichetă XML dintr-un titlu: „CRITERII DE ACCEPTANȚĂ” -> `criterii_de_acceptanta`.
+
+    Folosită ca ultimă soluție, pentru secțiunile care nu au o etichetă proprie.
+    Mai bine o etichetă care spune ceva decât un `<sectiune>` repetat de zece ori.
+    """
+    from .vocab import normalize
+
+    cleaned = re.sub(r"[^a-z0-9]+", "_", normalize(title)).strip("_")
+    return cleaned or "sectiune"
 
 
 def _join_ro(items: list[str]) -> str:
@@ -218,8 +233,14 @@ def build_sections(brief: Brief, domain: str, picker: Picker) -> tuple[list[Sect
             f"genuinely needs them. No clichés, no decorative enthusiasm, no filler phrasing that adds "
             f"no information."
         )
+    # Un ton cerut explicit e o instrucțiune, nu o preferință: nu se taie.
     sections.append(
-        Section(_title("tone", lang), [tone_text], priority=3, droppable=True, min_lines=0)
+        Section(
+            _title("tone", lang), [tone_text],
+            priority=2 if brief.tone else 3,
+            droppable=not brief.tone,
+            min_lines=1 if brief.tone else 0,
+        )
     )
 
     # --- CALITATE ----------------------------------------------------------
@@ -235,6 +256,10 @@ def build_sections(brief: Brief, domain: str, picker: Picker) -> tuple[list[Sect
                 droppable=True, min_lines=3, lead=prefix,
                 expansions=list(EXTRA_QUALITY[lang]))
     )
+
+    # --- JUDECATĂ PROPRIE ---------------------------------------------------
+    if not brief.strict:
+        sections.append(judgment.text_section(lang))
 
     # --- FORMAT ------------------------------------------------------------
     if lang == "ro":
@@ -325,7 +350,7 @@ def build_sections(brief: Brief, domain: str, picker: Picker) -> tuple[list[Sect
     return sections, reserve
 
 
-def _render(
+def render_sections(
     sections: list[Section],
     style: str,
     lang: str,
@@ -343,7 +368,7 @@ def _render(
             if not section.lines:
                 continue
             key = next((k for k, v in LABELS.items() if _title(k, lang) == section.title), None)
-            tag = _tag(key) if key else extra.get(section.title, "sectiune")
+            tag = _tag(key) if key else extra.get(section.title) or slugify(section.title)
             body = render_section(Section("", section.lines, bullet=section.bullet, lead=section.lead))
             blocks.append(f"<{tag}>\n{body}\n</{tag}>")
         return "\n\n".join(blocks)
@@ -386,7 +411,7 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
         brief.min_words,
         brief.max_words,
         reserve,
-        renderer=lambda secs: _render(secs, style, brief.lang),
+        renderer=lambda secs: render_sections(secs, style, brief.lang),
     )
 
     word_count = count_words(prompt)
@@ -411,3 +436,7 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
         notes=notes,
         used_descriptors=picker.chosen,
     )
+
+
+# Numele vechi, păstrat pentru codul care îl folosește deja.
+_render = render_sections

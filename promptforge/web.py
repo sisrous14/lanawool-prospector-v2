@@ -25,6 +25,7 @@ from .catalog import (
 from .media import ImageRef, MediaError, SUPPORTED_TYPES
 from .models import (
     Brief,
+    PROMPT_WORD_CAP,
     DEFAULT_MAX_WORDS,
     DEFAULT_MIN_WORDS,
     MAX_ALLOWED_WORDS,
@@ -125,7 +126,8 @@ PAGE = """<!doctype html>
 
   <div class="card">
     <div class="modes">
-      <button type="button" id="mode-text" aria-pressed="true">Text</button>
+      <button type="button" id="mode-auto" aria-pressed="true">Automat</button>
+      <button type="button" id="mode-text" aria-pressed="false">Text</button>
       <button type="button" id="mode-image" aria-pressed="false">Imagine</button>
       <button type="button" id="mode-video" aria-pressed="false">Video</button>
       <button type="button" id="mode-seo" aria-pressed="false">SEO</button>
@@ -212,6 +214,10 @@ PAGE = """<!doctype html>
         <input id="minw" type="number" value="__MIN__">
       </div>
       <div>
+        <label for="parts">Prompturi înlănțuite</label>
+        <input id="parts" type="number" min="1" max="100" placeholder="automat">
+      </div>
+      <div>
         <label for="maxw">Maxim cuvinte</label>
         <input id="maxw" type="number" value="__MAX__" min="60" max="__LIMIT__">
       </div>
@@ -227,6 +233,11 @@ PAGE = """<!doctype html>
     </div>
 
     <p class="pricing" id="pricing"></p>
+    <p class="pricing auto-only">
+      În modul automat programul alege singur modul, domeniul, modelul, formatul
+      și lungimea, apoi îți spune ce a ales. Peste 3000 de cuvinte, lucrarea se
+      împarte singură într-un lanț de prompturi care se continuă unul pe altul.
+    </p>
     <button id="go">Generează</button>
   </div>
 
@@ -255,7 +266,7 @@ PAGE = """<!doctype html>
 
 <script>
 const CONFIG = __CONFIG__;
-let mode = "text";
+let mode = "auto";
 
 const $ = (id) => document.getElementById(id);
 
@@ -287,15 +298,16 @@ function showPricing() {
   $("pricing").textContent = (option && option.dataset.note) || "";
 }
 
-const MODES = ["text", "image", "video", "seo", "vision"];
+const MODES = ["auto", "text", "image", "video", "seo", "vision"];
 
 function applyMode() {
   for (const name of MODES) {
     $("mode-" + name).setAttribute("aria-pressed", mode === name);
   }
   document.querySelectorAll(".text-only").forEach(el => el.hidden = mode !== "text");
+  document.querySelectorAll(".auto-only").forEach(el => el.hidden = mode !== "auto");
   document.querySelectorAll(".image-only").forEach(
-    el => el.hidden = mode === "text" || mode === "video" || mode === "seo");
+    el => el.hidden = mode === "text" || mode === "video" || mode === "seo" || mode === "auto");
   document.querySelectorAll(".video-only").forEach(el => el.hidden = mode !== "video");
   document.querySelectorAll(".seo-only").forEach(el => el.hidden = mode !== "seo");
   document.querySelectorAll(".vision-only").forEach(el => el.hidden = mode !== "vision");
@@ -305,8 +317,10 @@ function applyMode() {
       : mode === "seo"
         ? "Subiectul paginii (opțional, dacă ai lipit conținut mai sus)"
         : "Ideea ta";
-  $("domain").parentElement.hidden = mode === "vision" || mode === "seo";
-  const key = mode === "vision" ? "image" : (mode === "seo" ? "text" : mode);
+  $("domain").parentElement.hidden = mode === "vision" || mode === "seo" || mode === "auto";
+  $("target").parentElement.hidden = mode === "auto";
+  const key = (mode === "vision" || mode === "auto") ? "image" : (mode === "seo" ? "text" : mode);
+  if (mode === "auto") { fillSelect($("target"), CONFIG.targets.text, "implicit"); }
   fillSelect($("target"), CONFIG.targets[key], "implicit");
   fillSelect($("domain"), CONFIG.domains[key], "detectare automată");
   showPricing();
@@ -439,7 +453,13 @@ $("go").onclick = async () => {
     source_text: mode === "seo" ? $("source").value.trim() : "",
     keyword: mode === "seo" ? $("keyword").value.trim() : "",
     intent: mode === "seo" ? ($("intent").value || "") : "",
+    parts: parseInt($("parts").value, 10) || 0,
   };
+
+  if (mode === "auto") {
+    body.target = null;
+    body.domain = null;
+  }
 
   if (mode === "seo") {
     body.domain = $("seotype").value || null;
@@ -517,7 +537,8 @@ $("check-go").onclick = async () => {
 };
 
 function render(r) {
-  let html = '<div class="result"><div class="meta">Varianta ' + r.variant +
+  const isLink = (r.notes || []).some(n => n.startsWith("Veriga"));
+  let html = '<div class="result"><div class="meta">' + (isLink ? "Veriga " : "Varianta ") + r.variant +
              ' · domeniu: ' + escapeHtml(r.domain) + ' · țintă: ' + escapeHtml(r.target) +
              ' · ' + r.word_count + ' cuvinte</div>';
   html += '<pre>' + escapeHtml(r.full_text) + '</pre>';
@@ -725,10 +746,29 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         variants = payload.pop("variants", 1)
+        parts = int(payload.pop("parts", 0) or 0)
         try:
             variants = max(1, min(5, int(variants)))
+            notes: list[str] = []
+            if payload.get("mode") == "auto":
+                from .auto import decide
+
+                decision = decide(str(payload.get("idea") or ""))
+                for key, value in decision.options.items():
+                    payload.setdefault(key, value)
+                payload["mode"] = decision.options["mode"]
+                variants = decision.variants
+                notes.append(f"Alegeri automate: {decision.explain()}")
+
             brief = _brief_from_payload(payload)
-            results = generate_many(brief, variants)
+            if parts or brief.max_words > PROMPT_WORD_CAP:
+                from .chain import build as build_chain
+
+                results = build_chain(brief, parts or None)
+            else:
+                results = generate_many(brief, variants)
+            for result in results:
+                result.notes = notes + result.notes
         except (ValueError, TypeError) as exc:
             self._send_json(400, {"error": str(exc)})
             return

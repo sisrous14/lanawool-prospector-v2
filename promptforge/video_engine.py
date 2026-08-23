@@ -12,7 +12,7 @@ import re
 from .assembly import count_words, fit, range_note, render_section, sentence
 from .catalog import PLATFORMS, aspect_of
 from .depth import image_depth, platform_section
-from . import feedback
+from . import feedback, judgment
 from .detect import Picker, detect_domain
 from .models import Brief, GeneratedPrompt, MODE_VIDEO, Section
 from .targets import VIDEO_TARGETS, default_video_target
@@ -129,7 +129,7 @@ def build_sections(
         ),
         Section(
             _label("OPENING AND ENDING", lang),
-            [sentence(transition)],
+            [sentence(transition)] + ([] if brief.strict else [judgment.visual_line(lang)]),
             priority=2,
             droppable=True,
             expansions=[sentence(item) for item in COMMON_VIDEO["transition"] if item != transition],

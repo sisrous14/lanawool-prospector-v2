@@ -17,7 +17,7 @@ import re
 from .assembly import count_words, fit, range_note, render_section, sentence
 from .catalog import PLATFORMS, aspect_of, describe_size
 from .depth import image_depth, platform_section
-from . import feedback
+from . import feedback, judgment
 from .detect import Picker, detect_domain
 from .models import Brief, GeneratedPrompt, MODE_IMAGE, Section
 from .targets import IMAGE_TARGETS, default_image_target
@@ -282,8 +282,11 @@ def build_sections(
         Section(_label("COHERENCE", lang), [p["coherence"]], priority=3,
                 droppable=True, min_lines=0)
     )
+    focus_lines = [p["focus"]]
+    if not brief.strict:
+        focus_lines.append(judgment.visual_line(lang))
     reserve.append(
-        Section(_label("FOCUS DISCIPLINE", lang), [p["focus"]], priority=3,
+        Section(_label("FOCUS DISCIPLINE", lang), focus_lines, priority=3,
                 droppable=True, min_lines=0)
     )
 

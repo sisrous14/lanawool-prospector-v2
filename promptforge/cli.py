@@ -20,6 +20,7 @@ from .catalog import (
 )
 from .models import (
     Brief,
+    PROMPT_WORD_CAP,
     DEFAULT_MAX_WORDS,
     DEFAULT_MIN_WORDS,
     GeneratedPrompt,
@@ -58,6 +59,10 @@ def _add_common(parser: argparse.ArgumentParser, mode: str) -> None:
                         help="scrie în .csv, .json, .md sau .txt (formatul din extensie)")
     parser.add_argument("--explain", action="store_true",
                         help="explică la final ce face fiecare secțiune")
+    parser.add_argument("--parts", type=int, metavar="N",
+                        help="împarte lucrarea într-un lanț de N prompturi care se continuă")
+    parser.add_argument("--strict", action="store_true",
+                        help="fără latitudine: modelul execută litera cererii")
     parser.add_argument("--no-save", action="store_true", help="nu salva în istoric")
     parser.add_argument("--preset", help="profil salvat cu `promptforge preset salveaza`")
     parser.add_argument("--platform", choices=sorted(PLATFORMS),
@@ -99,6 +104,7 @@ def _brief_from_args(args: argparse.Namespace, mode: str) -> Brief:
         "lang": getattr(args, "lang", None),
         "seed": args.seed,
         "duration": getattr(args, "duration", 0),
+        "strict": getattr(args, "strict", False),
     }
     # Limitele de cuvinte se trimit doar dacă au fost schimbate, ca profilul să
     # poată fixa altele fără să fie suprascris de valorile implicite.
@@ -151,7 +157,8 @@ def _deliver(args: argparse.Namespace, results: list[GeneratedPrompt]) -> int:
     if args.as_json:
         output = json.dumps([r.to_dict() for r in results], ensure_ascii=False, indent=2)
     else:
-        output = "\n\n".join(_render_result(r, len(results)) for r in results)
+        kind = "VERIGA" if any("Veriga" in n for r in results for n in r.notes) else "VARIANTA"
+        output = "\n\n".join(_render_result(r, len(results), kind) for r in results)
         if getattr(args, "explain", False):
             output += "\n" + "\n".join(_explanations(r) for r in results)
 
@@ -174,8 +181,8 @@ def _deliver(args: argparse.Namespace, results: list[GeneratedPrompt]) -> int:
     return 0
 
 
-def _render_result(result: GeneratedPrompt, total: int) -> str:
-    header = f"VARIANTA {result.variant}/{total}" if total > 1 else "PROMPT"
+def _render_result(result: GeneratedPrompt, total: int, kind: str = "VARIANTA") -> str:
+    header = f"{kind} {result.variant}/{total}" if total > 1 else "PROMPT"
     meta = (
         f"mod: {result.mode} | domeniu: {result.domain} | țintă: {result.target} "
         f"| cuvinte: {result.word_count}"
@@ -200,8 +207,18 @@ def _run_generation(args: argparse.Namespace, mode: str) -> int:
         print(f"Eroare: {exc}", file=sys.stderr)
         return 2
 
+    parts = getattr(args, "parts", None)
     try:
-        results = generate_many(brief, max(1, args.variants))
+        if parts or brief.max_words > PROMPT_WORD_CAP:
+            from .chain import ChainError, build as build_chain
+
+            try:
+                results = build_chain(brief, parts)
+            except ChainError as exc:
+                print(f"Eroare: {exc}", file=sys.stderr)
+                return 2
+        else:
+            results = generate_many(brief, max(1, args.variants))
     except ValueError as exc:
         print(f"Eroare: {exc}", file=sys.stderr)
         return 2
@@ -652,6 +669,64 @@ def _cmd_series(args: argparse.Namespace) -> int:
     return code
 
 
+def _cmd_auto(args: argparse.Namespace) -> int:
+    """Programul alege singur modul, domeniul, ținta, formatul și lungimea."""
+    from .auto import decide
+    from .chain import ChainError, build as build_chain
+
+    idea = " ".join(args.idea)
+    given: dict[str, object] = {
+        key: value for key, value in (
+            ("mode", args.mode), ("domain", args.domain), ("target", args.target),
+            ("platform", args.platform), ("lang", args.lang),
+        ) if value
+    }
+    if args.min_words != DEFAULT_MIN_WORDS:
+        given["min_words"] = args.min_words
+    if args.max_words != DEFAULT_MAX_WORDS:
+        given["max_words"] = args.max_words
+
+    try:
+        decision = decide(idea, given)
+    except ValueError as exc:
+        print(f"Eroare: {exc}", file=sys.stderr)
+        return 2
+
+    options = dict(decision.options)
+    options.update({
+        "must": args.must,
+        "avoid": args.avoid,
+        "seed": args.seed,
+        "strict": args.strict,
+    })
+    if args.preset:
+        try:
+            options = presets.apply(args.preset, options)
+        except presets.PresetError as exc:
+            print(f"Eroare: {exc}", file=sys.stderr)
+            return 2
+
+    variants = args.variants if args.variants else decision.variants
+    try:
+        brief = Brief(idea=idea, **options)
+        if args.parts or brief.max_words > PROMPT_WORD_CAP:
+            results = build_chain(brief, args.parts)
+        else:
+            results = generate_many(brief, max(1, variants))
+    except (ValueError, ChainError) as exc:
+        print(f"Eroare: {exc}", file=sys.stderr)
+        return 2
+
+    for result in results:
+        result.notes.insert(0, f"Alegeri automate: {decision.explain()}")
+
+    code = _deliver(args, results)
+    if not args.no_save:
+        for result in results:
+            history_store.save(brief, result)
+    return code
+
+
 def _cmd_models(args: argparse.Namespace) -> int:
     """Modelele-țintă disponibile, cu eticheta de preț."""
     kinds = [args.kind] if args.kind else ["text", "image", "video"]
@@ -814,6 +889,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"PromptForge {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    auto_parser = sub.add_parser(
+        "auto", help="programul decide singur ce e mai bine pentru cererea ta")
+    auto_parser.add_argument("idea", nargs="+", help="ce vrei")
+    auto_parser.add_argument("--mode", choices=[MODE_TEXT, MODE_IMAGE, MODE_VIDEO, MODE_SEO],
+                             help="forțează modul, dacă nu vrei să aleagă el")
+    auto_parser.add_argument("--domain")
+    auto_parser.add_argument("--target")
+    auto_parser.add_argument("--platform", choices=sorted(PLATFORMS))
+    auto_parser.add_argument("--lang", choices=["ro", "en"])
+    auto_parser.add_argument("--must", action="append", default=[], metavar="CERINȚĂ")
+    auto_parser.add_argument("--avoid", action="append", default=[], metavar="INTERDICȚIE")
+    auto_parser.add_argument("--variants", type=int, default=0)
+    auto_parser.add_argument("--parts", type=int, metavar="N")
+    auto_parser.add_argument("--strict", action="store_true")
+    auto_parser.add_argument("--seed", type=int, default=0)
+    auto_parser.add_argument("--min-words", type=int, default=DEFAULT_MIN_WORDS)
+    auto_parser.add_argument("--max-words", type=int, default=DEFAULT_MAX_WORDS)
+    auto_parser.add_argument("--preset")
+    auto_parser.add_argument("--out", type=Path)
+    auto_parser.add_argument("--json", action="store_true", dest="as_json")
+    auto_parser.add_argument("--export", type=Path, metavar="FIȘIER")
+    auto_parser.add_argument("--explain", action="store_true")
+    auto_parser.add_argument("--no-save", action="store_true")
+    auto_parser.set_defaults(func=_cmd_auto)
+
     text_parser = sub.add_parser("text", help="prompt pentru un model de text")
     _add_common(text_parser, MODE_TEXT)
     text_parser.set_defaults(func=lambda a: _run_generation(a, MODE_TEXT))
@@ -971,9 +1071,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _default_to_auto(parser: argparse.ArgumentParser, argv: list[str]) -> list[str]:
+    """`promptforge "o idee"` înseamnă `promptforge auto "o idee"`.
+
+    Nu ceri un mod dacă nu îl știi; programul îl alege. Orice începe cu o
+    subcomandă cunoscută sau cu o opțiune rămâne neatins.
+    """
+    if not argv:
+        return argv
+    commands = set()
+    for action in parser._subparsers._group_actions:      # noqa: SLF001 - argparse nu expune altfel
+        commands.update(action.choices)
+    first = argv[0]
+    if first in commands or first.startswith("-"):
+        return argv
+    return ["auto"] + argv
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    if argv is None:
+        argv = sys.argv[1:]
+    args = parser.parse_args(_default_to_auto(parser, list(argv)))
     try:
         return args.func(args)
     except KeyboardInterrupt:

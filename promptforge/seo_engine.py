@@ -10,6 +10,7 @@ from __future__ import annotations
 from .assembly import count_words, fit, range_note
 from .catalog import known_fields
 from .depth import text_depth
+from . import judgment
 from .models import Brief, GeneratedPrompt, MODE_SEO, Section
 from .seo import (
     CONTENT_TYPES,
@@ -20,7 +21,7 @@ from .seo import (
     keywords,
 )
 from .targets import TEXT_TARGETS, default_text_target
-from .text_engine import _render
+from .text_engine import render_sections
 
 MAX_SOURCE_CHARS = 2500
 
@@ -35,6 +36,7 @@ _TITLES = {
     "avoid": {"ro": "DE EVITAT", "en": "AVOID"},
     "format": {"ro": "FORMAT DE IEȘIRE", "en": "OUTPUT FORMAT"},
     "check": {"ro": "VERIFICARE FINALĂ", "en": "FINAL CHECK"},
+    "judgment": {"ro": "JUDECATĂ PROPRIE", "en": "YOUR OWN JUDGMENT"},
 }
 
 _RULES = {
@@ -92,7 +94,7 @@ _TAGS = {
     "role": "rol", "source": "sursa", "keywords": "cuvinte_cheie",
     "intent": "intentie", "deliverables": "livrabile", "limits": "limite",
     "rules": "reguli", "avoid": "de_evitat", "format": "format",
-    "check": "verificare",
+    "check": "verificare", "judgment": "judecata",
 }
 
 
@@ -272,6 +274,9 @@ def build_sections(brief: Brief) -> tuple[list[Section], list[Section], list[str
             list(brief.must), priority=1, bullet="-",
         ))
 
+    if not brief.strict:
+        sections.append(judgment.text_section(lang))
+
     # --- FORMAT -------------------------------------------------------------
     sections.append(Section(
         _title("format", lang),
@@ -330,7 +335,7 @@ def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:
     style = TEXT_TARGETS[target]["style"]
     _, prompt = fit(
         sections, brief.min_words, brief.max_words, reserve,
-        renderer=lambda secs: _render(secs, style, brief.lang, _tag_map(brief.lang)),
+        renderer=lambda secs: render_sections(secs, style, brief.lang, _tag_map(brief.lang)),
     )
 
     word_count = count_words(prompt)

@@ -11,6 +11,7 @@ Motorul rulează local, fără dependențe și fără internet. Opțional, promp
 poate fi rescris de un model Claude, sau construit pornind de la pozele tale.
 
 ```
+$ promptforge "un clip de 15 secunde pentru TikTok cu produsul nostru"
 $ promptforge text "o aplicatie care imi urmareste cheltuielile lunare"
 $ promptforge image "portret al unui pescar batran" --target midjourney
 $ promptforge video "o reclama la cafea" --platform tiktok --duration 15
@@ -22,6 +23,89 @@ $ promptforge verifica --platform google --file anunt.txt
 $ promptforge modele          # ce modele există și care sunt gratis
 $ promptforge serve           # interfață web locală
 ```
+
+## Modul automat
+
+Cel mai scurt mod de a-l folosi: scrie ce vrei, fără să alegi nimic.
+
+```
+$ promptforge "un clip de 15 secunde pentru TikTok cu produsul nostru"
+
+PROMPT   (mod: video | domeniu: social | țintă: veo | cuvinte: 315)
+  • Alegeri automate: mod video, fiindcă ai scris „clip”; domeniul „social”,
+    din cuvintele cheie ale ideii; platformă TikTok, fiindcă ai numit-o.
+```
+
+Programul alege modul, domeniul, modelul-țintă, platforma, formatul, lungimea și
+numărul de variante — apoi îți spune ce a ales și de ce, ca să poți contrazice.
+Orice opțiune pe care o dai explicit rămâne a ta; automatul completează doar
+golurile.
+
+Lungimea urmează cererea: „pe scurt” dă un prompt de 300–450 de cuvinte, „complet
+și detaliat” dă 900–1300. Imaginile primesc trei variante implicit, fiindcă
+acolo direcția vizuală merită comparată.
+
+## Judecata modelului
+
+Fiecare prompt conține, implicit, un rând care îi dă modelului voie să gândească:
+
+> Cererea descrie rezultatul dorit, nu neapărat cel mai bun drum spre el: dacă
+> vezi o cale mai bună — altă structură, alt unghi, alt exemplu — ia-o, spune
+> într-un rând ce ai schimbat, dar nu rezolva altceva decât s-a cerut.
+
+Granița e scrisă în text și contează: latitudinea e pe **execuție**, nu pe
+domeniu. Modelul poate alege cum rezolvă; nu poate rezolva altceva, nu poate
+restrânge cererea și nu poate adăuga livrabile. La bugete mai mari, secțiunea
+crește cu încă două-trei reguli de acest fel.
+
+Cu `--strict` dispare complet, iar modelul execută litera cererii.
+
+## Lucrări care nu încap într-un prompt
+
+Un prompt are o limită practică de 3000 de cuvinte. Peste ea, programul nu taie:
+împarte lucrarea într-un lanț de prompturi, fiecare continuând exact de unde s-a
+oprit precedentul.
+
+```bash
+promptforge text "un manual complet despre paine cu maia" --max-words 9000
+promptforge text "o documentatie de API" --parts 12
+```
+
+```
+VERIGA 1/4   • Cere planul lucrării, apoi scrie partea 1.
+VERIGA 2/4   • Lipește blocul de stare din partea 1 acolo unde promptul îți cere.
+VERIGA 3/4   • …
+VERIGA 4/4   • Închide lucrarea.
+```
+
+**Cum se leagă verigile.** Prima cere modelului planul numerotat al tuturor
+părților, apoi partea 1, apoi un bloc de stare:
+
+```
+<<<STARE>>>
+PARTEA: 1 din 4
+PLAN: (planul numerotat al părților)
+ACOPERIT: (ce ai scris efectiv)
+ULTIMA FRAZĂ: (ultimele 15 cuvinte, textual)
+URMEAZĂ: (ce intră în partea 2)
+<<<SFÂRȘIT STARE>>>
+```
+
+Blocul ăsta îl lipești în veriga următoare, care continuă din punctul indicat de
+„ULTIMA FRAZĂ”, fără să reia și fără să rezume. Ultima verigă închide lucrarea
+și spune ce a rămas neacoperit, dacă a rămas ceva.
+
+Programul nu vede rezultatele, deci nu poate transporta el conținutul între
+prompturi — dar impune protocolul prin care se transportă singur. Fiecare verigă
+poartă și cererea inițială, ca să funcționeze și într-o sesiune nouă.
+
+Până la 100 de verigi, adică aproximativ 278.000 de cuvinte de prompt. Dacă îți
+trebuie o sută, se generează o sută. Verigile primesc felii diferite din
+materialul de îndrumare, ca fiecare să aducă ceva, nu să repete prima.
+
+Lanțul are sens pentru text și SEO, unde rezultatul continuă. Pentru imagini și
+clipuri, unde fiecare prompt produce ceva de sine stătător, comanda potrivită e
+`serie`.
 
 ## Instalare
 
@@ -341,7 +425,8 @@ nivelurile gratuite se schimbă des, iar comanda îți spune și ea asta la fina
 
 ## Cât de lung să fie promptul
 
-Implicit 300–500 de cuvinte. Poți cere până la 3000:
+Implicit 300–500 de cuvinte. Un singur prompt merge până la 3000; peste,
+lucrarea se împarte automat într-un lanț (vezi mai sus).
 
 ```bash
 promptforge text "un plan de afaceri" --min-words 1500 --max-words 2000
@@ -356,7 +441,7 @@ Două lucruri pe care ți le spune singur: peste circa 1200 de cuvinte te
 avertizează că modelele urmăresc tot mai slab instrucțiunile de la mijloc, iar
 dacă materialul se termină înainte de minimul cerut, îți spune la ce număr s-a
 oprit în loc să umple cu vorbe. În practică ajunge la circa 2900 de cuvinte
-pentru text și 2800 pentru imagine.
+pentru text și 2800 pentru imagine — peste atât intervine lanțul.
 
 ## Profiluri salvate
 
@@ -442,8 +527,9 @@ raționamentului cu `--effort low|medium|high|xhigh|max`.
 promptforge serve
 ```
 
-Pornește o pagină locală pe `http://127.0.0.1:8765`, cu patru moduri: **Text**,
-**Imagine**, **Video** și **Din poze**.
+Pornește o pagină locală pe `http://127.0.0.1:8765`, cu șase moduri:
+**Automat** (implicit), **Text**, **Imagine**, **Video**, **SEO** și **Din poze**.
+Câmpul „Prompturi înlănțuite” cere direct un lanț de N verigi.
 
 În modul *Din poze* ai o zonă în care poți **trage pozele direct**, le poți alege
 cu un clic sau le poți **lipi cu Ctrl+V**. Se adaugă la cele existente în loc să
@@ -462,6 +548,7 @@ bibliotecii standard.
 ## Alte comenzi
 
 ```bash
+promptforge auto "..."   # programul alege singur (sau doar: promptforge "...")
 promptforge ask          # mod interactiv, cu întrebări
 promptforge verifica     # limitele de caractere ale platformei
 promptforge liste        # domeniile, țintele, platformele și tonurile
@@ -538,6 +625,11 @@ toate într-un text gata de copiat.
 - Extragerea cuvintelor-cheie măsoară ce e în textul tău, nu ce caută lumea.
   Nu are date de volum de căutare și nu le poate inventa: pentru cercetarea
   propriu-zisă de cuvinte-cheie ai nevoie de un instrument cu date reale.
+- Modul automat citește semnale din text, nu înțelege intenția. Când greșește,
+  orice opțiune dată explicit îl corectează imediat.
+- Lanțul impune protocolul de continuare, dar nu poate verifica dacă modelul l-a
+  respectat: blocul de stare îl lipești tu. Dacă o parte iese scurtă, o reiei
+  singură, fără să reiei tot lanțul.
 - Programul generează prompturi, nu conținut final. Textul SEO îl produce
   modelul căruia îi dai promptul; cu `--refine` face și pasul ăsta, dar tot un
   model îl face, nu programul.
