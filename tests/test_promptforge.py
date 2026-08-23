@@ -2331,3 +2331,35 @@ class TestAutomatInInterfataWeb(unittest.TestCase):
         nota = [n for n in result["notes"] if n.startswith("Alegeri automate")]
         self.assertTrue(nota)
         self.assertIn("; ", nota[0])
+
+
+class TestIstoriculSeriei(unittest.TestCase):
+    """Fiecare element al seriei se salvează cu ideea lui.
+
+    Toate cele trei prompturi ajungeau în istoric sub ideea ultimului element,
+    fiindcă bucla refolosea aceeași variabilă `brief`. Feedback-ul (`bun` /
+    `slab`) învață din istoric, deci greșeala se propaga în preferințe.
+    """
+
+    def setUp(self):
+        self._home = os.environ.get("PROMPTFORGE_HOME")
+        self._tmp = tempfile.mkdtemp()
+        os.environ["PROMPTFORGE_HOME"] = self._tmp
+
+    def tearDown(self):
+        if self._home is None:
+            os.environ.pop("PROMPTFORGE_HOME", None)
+        else:
+            os.environ["PROMPTFORGE_HOME"] = self._home
+
+    def test_fiecare_element_cu_ideea_lui(self):
+        subiecte = ["o cana", "un ceainic", "o rasnita"]
+        self.assertEqual(main(["serie", "--items", *subiecte]), 0)
+
+        salvate = load(limit=10)
+        self.assertEqual(len(salvate), 3)
+        self.assertEqual([intrare["idea"] for intrare in salvate][::-1], subiecte)
+
+    def test_no_save_chiar_nu_salveaza(self):
+        self.assertEqual(main(["serie", "--items", "o cana", "un ceainic", "--no-save"]), 0)
+        self.assertEqual(load(limit=10), [])

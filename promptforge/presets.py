@@ -54,6 +54,14 @@ def save(name: str, options: dict) -> dict:
         key: value for key, value in options.items()
         if value not in (None, "", [], 0) or key == "seed"
     }
+    # Un profil fără nicio opțiune nu face nimic; salvat tăcut, doar încurcă
+    # mai târziu, când `--preset` pare că nu are efect.
+    if not cleaned:
+        raise PresetError(
+            f"Profilul {name.strip()!r} n-ar conține nimic. Dă-i cel puțin o "
+            f"opțiune, de pildă --set target=claude."
+        )
+
     def adauga(current: object) -> dict:
         saved = dict(current) if isinstance(current, dict) else {}
         saved[name.strip()] = cleaned

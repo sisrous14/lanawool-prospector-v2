@@ -24,7 +24,7 @@ from .models import (
     MODE_VIDEO,
 )
 
-__version__ = "1.4.4"
+__version__ = "1.4.5"
 
 
 def generate(brief: Brief, variant: int = 1) -> GeneratedPrompt:

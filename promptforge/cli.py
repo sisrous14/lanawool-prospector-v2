@@ -716,7 +716,9 @@ def _cmd_series(args: argparse.Namespace) -> int:
 
     results: list[GeneratedPrompt] = []
     shared: dict[str, str] = {}
-    brief: Brief | None = None
+    # Fiecare rezultat cu briefu-i propriu: istoricul trebuie să rețină ideea
+    # care l-a produs, nu ultima din serie.
+    perechi: list[tuple[Brief, GeneratedPrompt]] = []
 
     try:
         for index, item in enumerate(args.items):
@@ -738,13 +740,14 @@ def _cmd_series(args: argparse.Namespace) -> int:
                 f"Aspectul e comun pe toată seria.",
             )
             results.append(result)
+            perechi.append((brief, result))
     except ValueError as exc:
         print(f"Eroare: {exc}", file=sys.stderr)
         return 2
 
     code = _deliver(args, results)
-    if brief is not None and not args.no_save:
-        for result in results:
+    if not args.no_save:
+        for brief, result in perechi:
             history_store.save(brief, result)
     return code
 
